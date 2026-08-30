@@ -3,24 +3,249 @@
 
 import sys
 import os
+import glob
 import tempfile
 import subprocess
 import time
+import shutil
 import gi
-
-# === CONFIGURATION UTILISATEUR ============================================
-# Chemin absolu (pour vos tests locaux actuels) :
-CHEMIN_PYTHON = r"C:\Users\name\AppData\Local\Programs\Python\Python314\python.exe"
-
-# ⚠️ Pour la version publique à distribuer, remettez simplement : 
-# CHEMIN_PYTHON = "python"
-# ==========================================================================
 
 gi.require_version('Gimp', '3.0')
 from gi.repository import Gimp
 from gi.repository import GObject
 from gi.repository import GLib
 from gi.repository import Gio
+
+
+# ============================================================================
+# Utilitaires environnement / cache
+# ============================================================================
+
+def _creation_flags():
+    """Flag pour éviter l'ouverture d'une fenêtre console sur Windows. 0 ailleurs."""
+    return 0x08000000 if os.name == "nt" else 0
+
+
+def get_cache_path():
+    """Retourne le chemin du fichier de cache de l'environnement Python.
+    Utilise le dossier de config GIMP (persistant, pas nettoyable par un
+    utilitaire de nettoyage disque) avec repli sur le dossier temp système."""
+    try:
+        return os.path.join(Gimp.directory(), "ia_detourage_python_cache.txt")
+    except Exception:
+        return os.path.join(tempfile.gettempdir(), "gimp_ia_detourage_python_cache.txt")
+
+
+def get_clean_env():
+    """Nettoie les variables d'environnement héritées de GIMP (PYTHONPATH,
+    PYTHONHOME, et dossiers GIMP du PATH) pour ne pas empoisonner le Python
+    système. Utilisé à la fois pour la détection ET l'exécution finale, afin
+    que le test 'import rembg' reflète fidèlement les conditions réelles."""
+    env_clean = os.environ.copy()
+    env_clean.pop('PYTHONPATH', None)
+    env_clean.pop('PYTHONHOME', None)
+
+    if 'PATH' in env_clean:
+        chemins = env_clean['PATH'].split(os.pathsep)
+        chemins_propres = [c for c in chemins if 'gimp' not in c.lower()]
+        env_clean['PATH'] = os.pathsep.join(chemins_propres)
+
+    return env_clean
+
+
+def invalidate_cache():
+    cache_file = get_cache_path()
+    if os.path.exists(cache_file):
+        try:
+            os.remove(cache_file)
+        except OSError:
+            pass
+
+
+# ============================================================================
+# Stratégies de recherche d'un interpréteur Python
+# Chacune est indépendante : si le PATH hérité par GIMP est périmé ou
+# incomplet, les autres stratégies (py launcher, registre, scan disque)
+# prennent le relais sans en dépendre.
+# ============================================================================
+
+def _candidats_via_path(env_clean):
+    """Stratégie 1 : recherche via PATH (where/which).
+    Fragile si le PATH hérité par GIMP est périmé ou incomplet."""
+    candidats = []
+    noms_commande = ["python3", "python"] if os.name != "nt" else ["python", "python3"]
+
+    if os.name == "nt":
+        for cmd in noms_commande:
+            try:
+                out = subprocess.check_output(
+                    ["where", cmd], text=True, stderr=subprocess.DEVNULL,
+                    creationflags=_creation_flags(), timeout=5, env=env_clean
+                )
+                candidats += [l.strip() for l in out.splitlines() if l.strip()]
+            except Exception:
+                pass
+    else:
+        try:
+            out = subprocess.check_output(
+                ["which", "-a", "python3"], text=True, stderr=subprocess.DEVNULL,
+                timeout=5, env=env_clean
+            )
+            candidats += [l.strip() for l in out.splitlines() if l.strip()]
+        except Exception:
+            pass
+
+    for cmd in noms_commande:
+        found = shutil.which(cmd, path=env_clean.get('PATH', os.defpath))
+        if found:
+            candidats.append(found)
+
+    return candidats
+
+
+def _candidats_via_py_launcher(env_clean):
+    """Stratégie 2 (Windows uniquement) : le lanceur 'py' lit le registre
+    Windows, pas le PATH — il retrouve les installations même si le PATH
+    hérité par GIMP est obsolète ou incomplet."""
+    if os.name != "nt":
+        return []
+    candidats = []
+    try:
+        out = subprocess.check_output(
+            ["py", "-0p"], text=True, stderr=subprocess.DEVNULL,
+            creationflags=_creation_flags(), timeout=5, env=env_clean
+        )
+        for ligne in out.splitlines():
+            ligne = ligne.strip()
+            # Format typique : "-3.14-64 * C:\...\python.exe"
+            if ligne.lower().endswith("python.exe"):
+                chemin = ligne.split()[-1]
+                candidats.append(chemin)
+    except Exception:
+        pass
+    return candidats
+
+
+def _candidats_via_registre():
+    """Stratégie 3 (Windows uniquement) : lecture directe du registre
+    Windows (HKCU puis HKLM), indépendante du PATH et du lanceur py."""
+    if os.name != "nt":
+        return []
+    candidats = []
+    try:
+        import winreg
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                racine = winreg.OpenKey(hive, r"Software\Python\PythonCore")
+            except OSError:
+                continue
+            try:
+                i = 0
+                while True:
+                    try:
+                        version = winreg.EnumKey(racine, i)
+                    except OSError:
+                        break
+                    i += 1
+                    try:
+                        chemin_key = winreg.OpenKey(racine, f"{version}\\InstallPath")
+                        chemin, _ = winreg.QueryValueEx(chemin_key, "ExecutablePath")
+                        candidats.append(chemin)
+                    except OSError:
+                        continue
+            finally:
+                winreg.CloseKey(racine)
+    except Exception:
+        pass
+    return candidats
+
+
+def _candidats_via_scan_disque():
+    """Stratégie 4 (Windows uniquement, dernier recours) : scan direct des
+    emplacements d'installation standards, sans dépendre du PATH,
+    du registre ni du lanceur py."""
+    if os.name != "nt":
+        return []
+    candidats = []
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    program_files_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+
+    motifs = []
+    if local_appdata:
+        motifs.append(os.path.join(local_appdata, "Programs", "Python", "Python3*", "python.exe"))
+    motifs.append(os.path.join(program_files, "Python3*", "python.exe"))
+    motifs.append(os.path.join(program_files_x86, "Python3*", "python.exe"))
+
+    for motif in motifs:
+        candidats += glob.glob(motif)
+
+    return candidats
+
+
+def find_valid_python():
+    """Cherche un interpréteur Python valide contenant rembg, en excluant
+    celui de GIMP. Combine plusieurs stratégies indépendantes du PATH, et
+    teste chaque candidat avec l'environnement nettoyé (env_clean) — le même
+    que celui utilisé pour l'exécution finale du worker — afin d'éviter tout
+    faux positif entre la phase de détection et l'exécution réelle."""
+    gimp_bin = os.path.dirname(sys.executable)
+    env_clean = get_clean_env()
+
+    candidats = []
+    candidats += _candidats_via_path(env_clean)
+    candidats += _candidats_via_py_launcher(env_clean)
+    candidats += _candidats_via_registre()
+    candidats += _candidats_via_scan_disque()
+
+    # Nettoyage des doublons tout en conservant l'ordre
+    candidats = list(dict.fromkeys(candidats))
+
+    for exe in candidats:
+        if not exe or not os.path.exists(exe):
+            continue
+        # Exclusion stricte du Python embarqué par GIMP
+        if os.path.dirname(exe).lower() == gimp_bin.lower():
+            continue
+
+        try:
+            # Test dans l'environnement assaini, identique à celui du worker final
+            r = subprocess.run(
+                [exe, "-c", "import rembg"], capture_output=True,
+                timeout=10, creationflags=_creation_flags(), env=env_clean
+            )
+            if r.returncode == 0:
+                return exe
+        except Exception:
+            continue
+
+    return None
+
+
+def get_cached_python(force_refresh=False):
+    """Récupère le chemin Python depuis le cache, ou lance la recherche si
+    nécessaire ou si le cache est absent/périmé."""
+    cache_file = get_cache_path()
+
+    if not force_refresh and os.path.exists(cache_file):
+        with open(cache_file, 'r', encoding='utf-8') as f:
+            cached_exe = f.read().strip()
+        if cached_exe and os.path.exists(cached_exe):
+            return cached_exe
+
+    exe = find_valid_python()
+    if exe:
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            f.write(exe)
+    else:
+        # Aucun candidat valide : on invalide un éventuel cache périmé
+        invalidate_cache()
+    return exe
+
+
+# ============================================================================
+# Plugin GIMP
+# ============================================================================
 
 class IaDetouragePlugin(Gimp.PlugIn):
     __gtype_name__ = 'IaDetouragePlugin'
@@ -34,12 +259,12 @@ class IaDetouragePlugin(Gimp.PlugIn):
         procedure.set_menu_label("Détourer le calque (IA)...")
         procedure.add_menu_path("<Image>/Layer/Transparency/")
         procedure.set_attribution("Miguel Pineau", "Miguel Pineau", "2026")
-        
+
         procedure.add_boolean_argument("alpha-matting", "Améliorer les détails fins (Alpha Matting)", "Plus lent", False, GObject.ParamFlags.READWRITE)
         procedure.add_int_argument("fg-threshold", "Seuil d'avant-plan", "(0-255)", 0, 255, 240, GObject.ParamFlags.READWRITE)
         procedure.add_int_argument("bg-threshold", "Seuil d'arrière-plan", "(0-255)", 0, 255, 10, GObject.ParamFlags.READWRITE)
         procedure.add_int_argument("erode-size", "Taille d'érosion", "(0-255)", 0, 255, 10, GObject.ParamFlags.READWRITE)
-        
+
         return procedure
 
     def run(self, procedure, run_mode, image, drawables, config, run_data):
@@ -47,13 +272,13 @@ class IaDetouragePlugin(Gimp.PlugIn):
             if len(drawables) != 1:
                 Gimp.message("Veuillez sélectionner un seul calque.")
                 return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, GLib.Error())
-                
+
             drawable = drawables[0]
 
             if run_mode == Gimp.RunMode.INTERACTIVE:
                 gi.require_version('GimpUi', '3.0')
                 from gi.repository import GimpUi
-                
+
                 GimpUi.init("ia_detourage")
                 dialog = GimpUi.ProcedureDialog.new(procedure, config)
                 dialog.fill(None)
@@ -61,7 +286,7 @@ class IaDetouragePlugin(Gimp.PlugIn):
                     dialog.destroy()
                     return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
                 dialog.destroy()
-                
+
             use_alpha_matting = config.get_property("alpha-matting")
             fg_thresh = config.get_property("fg-threshold")
             bg_thresh = config.get_property("bg-threshold")
@@ -76,16 +301,24 @@ class IaDetouragePlugin(Gimp.PlugIn):
 
             Gimp.progress_init("Exportation du calque...")
             file_in = Gio.File.new_for_path(file_in_path)
-            
+
             try:
                 Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, image, file_in)
             except Exception:
                 Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, image, file_in, None)
-            
+
+            Gimp.progress_set_text("Recherche de l'environnement Python...")
+            python_exe = get_cached_python()
+
+            if not python_exe:
+                raise Exception(
+                    "Le module IA n'a pas été trouvé dans les environnements Python de "
+                    "votre système.\n\nVeuillez ouvrir l'Invite de commandes (cmd) Windows "
+                    "et taper exactement :\npip install \"rembg[cpu,cli]\""
+                )
+
             Gimp.progress_set_text("Détourage IA en arrière-plan...")
-            
-            python_exe = CHEMIN_PYTHON
-            
+
             script_path = os.path.join(temp_dir, "run_rembg_worker.py")
             with open(script_path, "w", encoding="utf-8") as f:
                 f.write(f"""
@@ -101,8 +334,8 @@ except ImportError:
 session = new_session('u2netp')
 img = Image.open(r"{file_in_path}")
 out = remove(
-    img, 
-    session=session, 
+    img,
+    session=session,
     alpha_matting={use_alpha_matting},
     alpha_matting_foreground_threshold={fg_thresh},
     alpha_matting_background_threshold={bg_thresh},
@@ -110,45 +343,40 @@ out = remove(
 )
 out.save(r"{file_out_path}")
 """)
-                
-            cmd = [python_exe, script_path]
 
-# --- NETTOYAGE DE LA BULLE GIMP ---
-            env_windows = os.environ.copy()
-            env_windows.pop('PYTHONPATH', None)
-            env_windows.pop('PYTHONHOME', None)
-            
-            # On supprime GIMP du PATH pour forcer Windows à utiliser le vrai Python
-            if 'PATH' in env_windows:
-                chemins = env_windows['PATH'].split(os.pathsep)
-                chemins_propres = [c for c in chemins if 'gimp' not in c.lower()]
-                env_windows['PATH'] = os.pathsep.join(chemins_propres)
-# ----------------------------------
+            env_clean = get_clean_env()
 
-            # --- Lancement en arrière-plan sans bloquer GIMP ---
             process = subprocess.Popen(
-                cmd, 
-                env=env_windows, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE, 
-                text=True, 
-                creationflags=0x08000000
+                [python_exe, script_path],
+                env=env_clean,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=_creation_flags()
             )
-           
-            # Boucle d'attente : on anime la barre tant que l'IA travaille
+
             while process.poll() is None:
-                Gimp.progress_pulse()  # Fait faire un va-et-vient à la barre
-                time.sleep(0.2)        # Courte pause de 200ms
-            
-            # L'IA a terminé, on récupère le texte de la console
+                Gimp.progress_pulse()
+                time.sleep(0.2)
+
             stdout, stderr = process.communicate()
-            
+
             if process.returncode != 0:
                 if "ERREUR_MODULE_MANQUANT" in stderr:
-                    raise Exception("Le module IA n'a pas été trouvé par Python.\n\nVeuillez ouvrir l'Invite de commandes (cmd) Windows et taper exactement :\npip install \"rembg[cpu,cli]\"")
+                    # Le cache pointait vers un environnement devenu invalide :
+                    # on l'invalide pour forcer une nouvelle détection au
+                    # prochain essai, sans que l'utilisateur ait à intervenir.
+                    invalidate_cache()
+                    raise Exception(
+                        "Le module IA n'a pas été trouvé par Python.\n\nVeuillez ouvrir "
+                        "l'Invite de commandes (cmd) Windows et taper exactement :\n"
+                        "pip install \"rembg[cpu,cli]\"\n\n"
+                        "Si le problème persiste, relancez simplement le greffon : "
+                        "une nouvelle recherche d'environnement sera effectuée."
+                    )
                 else:
                     raise Exception(f"Détail technique du plantage :\n{stderr}")
-            
+
             if os.path.exists(script_path):
                 try:
                     os.remove(script_path)
@@ -157,13 +385,13 @@ out.save(r"{file_out_path}")
 
             Gimp.progress_set_text("Intégration du résultat...")
             file_out = Gio.File.new_for_path(file_out_path)
-            
+
             new_layers = None
             if hasattr(Gimp, 'file_load_layers'):
                 new_layers = Gimp.file_load_layers(Gimp.RunMode.NONINTERACTIVE, image, file_out)
             else:
                 new_layers = Gimp.file_load_layer(Gimp.RunMode.NONINTERACTIVE, image, file_out)
-            
+
             if new_layers:
                 new_layer = new_layers[0]
                 new_layer.set_name(f"{drawable.get_name()} (détouré)")
@@ -176,7 +404,7 @@ out.save(r"{file_out_path}")
                         os.remove(p)
                     except OSError:
                         pass
-            
+
             image.undo_group_end()
             Gimp.context_pop()
             Gimp.displays_flush()
@@ -184,15 +412,15 @@ out.save(r"{file_out_path}")
             return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
         except Exception as e:
-            # Fermeture de sécurité du groupe d'annulation (empêche l'erreur 'inconsistent state')
             try:
                 image.undo_group_end()
                 Gimp.context_pop()
-            except:
+            except Exception:
                 pass
-                
+
             Gimp.message(f"Erreur du greffon IA :\n{str(e)}")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
 
 if __name__ == '__main__':
     Gimp.main(IaDetouragePlugin.__gtype__, sys.argv)
