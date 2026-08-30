@@ -2,7 +2,7 @@
  
 **Ultra-stable GIMP 3.0 plugin for automatic AI background removal, powered by [`rembg`](https://github.com/danielgatis/rembg).**
  
-Unlike other plugins, this script runs the AI model in a **separate subprocess** instead of inside GIMP's own memory space — so your image editor will never crash, no matter what happens. It also includes an animated progress bar and smart error dialogs to help you fix missing dependencies quickly.
+Unlike other plugins, this script runs the AI model in a **separate subprocess** instead of inside GIMP's own memory space — so your image editor will never crash, no matter what happens. It automatically locates a suitable Python installation on your system, includes an animated progress bar, and shows smart error dialogs to help you fix missing dependencies quickly.
  
 🇬🇧 [English](#-english) · 🇫🇷 [Français](#-français)
  
@@ -13,6 +13,7 @@ Unlike other plugins, this script runs the AI model in a **separate subprocess**
 ### Features
  
 - 🛡️ **Crash-proof** — the AI model runs outside GIMP's process
+- 🔍 **Automatic Python detection** — no configuration file to edit, the plugin finds a working Python installation on its own
 - 📊 **Live progress bar** while the image is processed
 - 🩺 **Smart error dialogs** if a dependency is missing or misconfigured
 - 💻 **CPU-only mode** — works on any machine, no GPU required
@@ -21,8 +22,10 @@ Unlike other plugins, this script runs the AI model in a **separate subprocess**
 | Requirement | Version |
 |---|---|
 | GIMP | 3.0+ |
-| Python | 3.9+ (with `pip`) |
+| Python | 3.9+ (with `pip`), installed **separately from GIMP** |
 | OS | Windows (see notes below for macOS/Linux) |
+ 
+> ℹ️ GIMP 3 ships with its own internal Python interpreter (used to run this very plugin). That internal copy is intentionally **never used** to run the AI model — the plugin always looks for a separate, regular Python installation on your system instead.
  
 ### Installation
  
@@ -30,8 +33,8 @@ Unlike other plugins, this script runs the AI model in a **separate subprocess**
  
 1. Download Python from [python.org/downloads](https://www.python.org/downloads/).
 2. Run the installer.
-3. ⚠️ **Critical:** on the very first installation screen, check the box **"Add python.exe to PATH"** before clicking **Install Now**.
-4. Restart your computer (or at least close GIMP if it was open) so the new PATH variable takes effect.
+3. ✅ **Recommended:** on the first installation screen, check the box **"Add python.exe to PATH"** before clicking **Install Now**. This isn't strictly required anymore (see below), but it keeps things simple and lets you use `pip`/`python` directly from the Command Prompt.
+4. If GIMP is already open, restart it after installing Python so it picks up the new installation.
 #### Step 2 — Install the AI engine
  
 This plugin uses standard **CPU mode** for universal hardware compatibility — no GPU required.
@@ -52,30 +55,40 @@ This plugin uses standard **CPU mode** for universal hardware compatibility — 
 2. Open **GIMP 3.0** and go to **Edit ▸ Preferences ▸ Folders ▸ Plug-ins**.
 3. Copy `ia_detourage.py` into your personal plug-ins folder (usually `C:\Users\<YourName>\AppData\Roaming\GIMP\3.0\plug-ins`).
 4. Restart GIMP.
-The plugin is now available under:
+**That's it — no file to edit, no path to configure.** The plugin is now available under:
 **Image ▸ Layer ▸ Transparency ▸ Remove Background (AI)...**
  
 ### Usage
  
 1. Open or select the layer you want to process.
 2. Go to **Image ▸ Layer ▸ Transparency ▸ Remove Background (AI)...**.
-3. Wait for the progress bar — processing takes roughly **40 seconds per image**, depending on your CPU.
-4. The background is automatically converted to transparency once processing completes.
+3. On the very first run, the plugin searches your system for a valid Python installation with `rembg` installed — this adds a few extra seconds one time only; the result is then cached.
+4. Wait for the progress bar — processing takes roughly **40 seconds per image**, depending on your CPU.
+5. The background is automatically converted to transparency once processing completes.
+### How the automatic Python detection works
+ 
+Older versions of this plugin required manually editing the `.py` file to hardcode a Python path, because GIMP 3 bundles its own internal `python.exe` which would otherwise get picked up by mistake (it doesn't have `rembg` installed, and never will). This version detects a valid, separate Python installation on its own, trying several independent methods in order until one works — so it doesn't rely on a single fragile mechanism (like an outdated system PATH):
+ 
+1. **PATH lookup** (`where`/`which python`) — works most of the time, but can fail if GIMP was started before Python was added to the system PATH.
+2. **The `py` launcher** (Windows) — reads Python installations directly from the Windows registry, independent of PATH.
+3. **Direct registry lookup** (Windows) — same idea, queried directly as a fallback.
+4. **Disk scan** (Windows) — checks standard install locations (`AppData\Local\Programs\Python`, `Program Files`) as a last resort.
+Each candidate is actually tested (`import rembg`) before being accepted — the plugin never guesses. The GIMP-internal Python is always explicitly excluded. The result is cached (in GIMP's own config folder) so this search only runs once; if that cached Python later becomes invalid (e.g. `rembg` was uninstalled), the cache is automatically cleared and the plugin searches again on the next run — no manual cache-clearing needed.
+ 
 ### Troubleshooting
  
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Plugin doesn't appear in the menu | Wrong plug-ins folder, or GIMP not restarted | Double-check the folder path in Step 3 and restart GIMP |
-| "Python not found" error | Python not added to PATH | Reinstall Python and check "Add python.exe to PATH" |
-| "rembg not found" error | `pip install` step skipped or failed | Re-run `pip install "rembg[cpu,cli]"` in `cmd` |
-| First run is very slow | AI model not pre-downloaded | Run the `new_session('u2netp')` command from Step 2 |
+| "Module IA introuvable" error | No Python installation with `rembg` could be found automatically | Open Command Prompt and run `pip install "rembg[cpu,cli]"`, then simply try the plugin again — no file editing needed |
+| Detection picks a stale/invalid Python | The system changed since the last successful detection (Python moved, uninstalled, etc.) | Just run the plugin again — the invalid entry is detected and a fresh search happens automatically |
+| First run is very slow | AI model not pre-downloaded, or first-time Python detection | Run the `new_session('u2netp')` command from Step 2 to pre-download the model; the one-time detection delay is normal and only happens once |
  
 ### macOS / Linux — untested adaptation notes
  
-> ⚠️ **These instructions are only a proposal.** This plugin was written and tested on Windows only — the steps below are educated guesses at what would need to change on macOS or Linux, with **no guarantee that they will work as-is**. Expect to debug paths and permissions yourself.
+> ⚠️ **These instructions are only a proposal.** This plugin was written and tested on Windows only. The automatic detection includes a `which python3` fallback that should work on macOS/Linux, but the `py` launcher, registry lookup, and disk-scan strategies are Windows-specific and simply skip themselves on other platforms — detection there relies on PATH alone, so keep Python properly on your PATH. Expect to debug paths and permissions yourself.
  
 - **Python & pip**: macOS and most Linux distributions already ship with Python 3. Check with `python3 --version` in a terminal. If missing, install it via [python.org](https://www.python.org/downloads/) (macOS) or your package manager, e.g. `sudo apt install python3 python3-pip` (Debian/Ubuntu).
-- **PATH**: the "Add python.exe to PATH" step is Windows-specific and not needed on macOS/Linux, since `python3`/`pip3` are normally already on the PATH.
 - **Installing rembg**: use `pip3` instead of `pip` if both Python 2 and 3 are present:
 ```bash
   pip3 install "rembg[cpu,cli]"
@@ -92,12 +105,12 @@ The plugin is now available under:
 ```bash
   chmod +x ia_detourage.py
 ```
-- **Shebang line**: the script may need a `#!/usr/bin/env python3` line at the top to run correctly outside Windows — check the `.py` file if GIMP fails to detect it.
+- **Shebang line**: the script already starts with `#!/usr/bin/env python3`, which should be enough for GIMP to detect it correctly outside Windows.
 If you get it working reliably on macOS or Linux, contributions/PRs documenting the exact steps are welcome.
  
 ### License
  
-* licence MIT *
+*license MIT*
  
 ---
  
@@ -106,6 +119,7 @@ If you get it working reliably on macOS or Linux, contributions/PRs documenting 
 ### Fonctionnalités
  
 - 🛡️ **Anti-crash** — le modèle IA s'exécute en dehors du processus de GIMP
+- 🔍 **Détection automatique de Python** — aucun fichier de configuration à modifier, le greffon trouve lui-même une installation Python fonctionnelle
 - 📊 **Barre de progression animée** pendant le traitement
 - 🩺 **Messages d'erreur clairs** en cas de dépendance manquante ou mal configurée
 - 💻 **Mode CPU** — fonctionne sur n'importe quel ordinateur, sans carte graphique dédiée
@@ -114,19 +128,21 @@ If you get it working reliably on macOS or Linux, contributions/PRs documenting 
 | Élément | Version |
 |---|---|
 | GIMP | 3.0+ |
-| Python | 3.9+ (avec `pip`) |
+| Python | 3.9+ (avec `pip`), installé **séparément de GIMP** |
 | Système | Windows (voir remarques ci-dessous pour macOS/Linux) |
+ 
+> ℹ️ GIMP 3 embarque son propre interpréteur Python interne (celui qui exécute ce greffon). Cette copie interne n'est volontairement **jamais utilisée** pour exécuter le modèle IA — le greffon recherche toujours une installation Python distincte et classique sur votre système.
  
 ### Installation
  
 #### Étape 1 — Installer Python
  
-L'IA a besoin de Python pour fonctionner. Si vous l'avez déjà installé **et ajouté au PATH**, passez à l'étape 2.
+L'IA a besoin d'une installation Python distincte de celle de GIMP pour fonctionner.
  
 1. Téléchargez la dernière version de Python sur le site officiel : [python.org/downloads](https://www.python.org/downloads/).
 2. Lancez le programme d'installation.
-3. ⚠️ **Étape cruciale :** sur le tout premier écran de l'installateur, **cochez impérativement la case « Add python.exe to PATH »** en bas de la fenêtre avant de cliquer sur **Install Now**. Sans cela, GIMP ne trouvera pas Python.
-4. Une fois l'installation terminée, redémarrez votre ordinateur (ou au minimum fermez GIMP s'il était ouvert) pour appliquer la nouvelle variable système.
+3. ✅ **Recommandé :** sur le premier écran de l'installateur, cochez la case **« Add python.exe to PATH »** avant de cliquer sur **Install Now**. Ce n'est plus strictement obligatoire (voir plus bas), mais cela simplifie l'usage de `pip`/`python` depuis l'Invite de commandes.
+4. Si GIMP était déjà ouvert, redémarrez-le après l'installation de Python pour qu'il prenne en compte la nouvelle installation.
 #### Étape 2 — Installer le moteur IA
  
 Ce greffon utilise le mode processeur (**CPU**) standard, pour garantir une compatibilité universelle sans exiger de carte graphique spécifique.
@@ -147,30 +163,40 @@ Ce greffon utilise le mode processeur (**CPU**) standard, pour garantir une comp
 2. Ouvrez **GIMP 3.0** et allez dans **Édition ▸ Préférences ▸ Dossiers ▸ Greffons**.
 3. Placez `ia_detourage.py` dans votre dossier personnel de greffons (généralement `C:\Users\VotreNom\AppData\Roaming\GIMP\3.0\plug-ins`).
 4. Redémarrez GIMP.
-Le greffon est désormais disponible dans le menu :
+**C'est tout — aucun fichier à modifier, aucun chemin à configurer.** Le greffon est désormais disponible dans le menu :
 **Image ▸ Calque ▸ Transparence ▸ Détourer le calque (IA)...**
  
 ### Utilisation
  
 1. Ouvrez ou sélectionnez le calque à traiter.
 2. Allez dans **Image ▸ Calque ▸ Transparence ▸ Détourer le calque (IA)...**.
-3. Patientez pendant la barre de progression — le traitement prend environ **40 secondes par image**, selon la puissance de votre processeur.
-4. L'arrière-plan est automatiquement converti en transparence une fois le traitement terminé.
+3. Au tout premier lancement, le greffon recherche sur votre système une installation Python valide disposant de `rembg` — cela ajoute quelques secondes, une seule fois ; le résultat est ensuite mis en cache.
+4. Patientez pendant la barre de progression — le traitement prend environ **40 secondes par image**, selon la puissance de votre processeur.
+5. L'arrière-plan est automatiquement converti en transparence une fois le traitement terminé.
+### Comment fonctionne la détection automatique de Python
+ 
+Les anciennes versions de ce greffon nécessitaient de modifier manuellement le fichier `.py` pour y indiquer un chemin Python en dur, car GIMP 3 embarque son propre `python.exe` interne qui serait sinon utilisé par erreur (il ne dispose pas de `rembg`, et n'en disposera jamais). Cette version détecte seule une installation Python valide et distincte, en essayant plusieurs méthodes indépendantes dans l'ordre jusqu'à ce que l'une fonctionne — elle ne repose donc pas sur un seul mécanisme fragile (comme un PATH système obsolète) :
+ 
+1. **Recherche via le PATH** (`where`/`which python`) — fonctionne la plupart du temps, mais peut échouer si GIMP a été lancé avant que Python ne soit ajouté au PATH système.
+2. **Le lanceur `py`** (Windows) — lit les installations Python directement depuis le registre Windows, indépendamment du PATH.
+3. **Lecture directe du registre** (Windows) — même principe, interrogé directement en repli.
+4. **Scan disque** (Windows) — vérifie les emplacements d'installation standards (`AppData\Local\Programs\Python`, `Program Files`) en dernier recours.
+Chaque candidat trouvé est réellement testé (`import rembg`) avant d'être accepté — le greffon ne devine jamais. Le Python interne de GIMP est toujours explicitement exclu. Le résultat est mis en cache (dans le dossier de configuration de GIMP), donc cette recherche ne s'exécute qu'une seule fois ; si ce Python mis en cache devient invalide par la suite (par exemple si `rembg` est désinstallé), le cache est automatiquement effacé et le greffon relance une recherche au prochain lancement — sans intervention manuelle de votre part.
+ 
 ### Dépannage
  
 | Symptôme | Cause probable | Solution |
 |---|---|---|
 | Le greffon n'apparaît pas dans le menu | Mauvais dossier de greffons, ou GIMP non redémarré | Vérifiez le chemin du dossier (Étape 3) et redémarrez GIMP |
-| Erreur « Python introuvable » | Python non ajouté au PATH | Réinstallez Python en cochant « Add python.exe to PATH » |
-| Erreur « rembg introuvable » | Étape `pip install` oubliée ou échouée | Relancez `pip install "rembg[cpu,cli]"` dans `cmd` |
-| Premier lancement très lent | Modèle IA non pré-téléchargé | Exécutez la commande `new_session('u2netp')` de l'Étape 2 |
+| Erreur « Module IA introuvable » | Aucune installation Python avec `rembg` n'a pu être trouvée automatiquement | Ouvrez l'Invite de commandes et lancez `pip install "rembg[cpu,cli]"`, puis relancez simplement le greffon — aucune modification de fichier n'est nécessaire |
+| La détection retombe sur un Python périmé/invalide | Le système a changé depuis la dernière détection réussie (Python déplacé, désinstallé, etc.) | Relancez simplement le greffon — l'entrée invalide est détectée et une nouvelle recherche se déclenche automatiquement |
+| Premier lancement très lent | Modèle IA non pré-téléchargé, ou première détection Python | Exécutez la commande `new_session('u2netp')` de l'Étape 2 pour pré-télécharger le modèle ; le délai de détection ponctuel est normal et ne se produit qu'une seule fois |
  
 ### macOS / Linux — pistes d'adaptation non testées
  
-> ⚠️ **Ces indications sont une proposition, sans certitude qu'elles fonctionnent telles quelles.** Ce greffon a été écrit et testé uniquement sous Windows — ce qui suit correspond à ce qu'il faudrait probablement adapter sur macOS ou Linux, mais attendez-vous à devoir ajuster vous-même certains chemins et permissions.
+> ⚠️ **Ces indications sont une proposition, sans certitude qu'elles fonctionnent telles quelles.** Ce greffon a été écrit et testé uniquement sous Windows. La détection automatique inclut un repli `which python3` qui devrait fonctionner sur macOS/Linux, mais les stratégies du lanceur `py`, de lecture du registre et de scan disque sont spécifiques à Windows et se désactivent simplement sur les autres systèmes — la détection y repose donc uniquement sur le PATH, veillez à ce que Python y soit correctement présent. Attendez-vous à devoir ajuster vous-même certains chemins et permissions.
  
 - **Python & pip** : macOS et la plupart des distributions Linux incluent déjà Python 3. Vérifiez avec `python3 --version` dans un terminal. S'il est absent, installez-le via [python.org](https://www.python.org/downloads/) (macOS) ou votre gestionnaire de paquets, par exemple `sudo apt install python3 python3-pip` (Debian/Ubuntu).
-- **PATH** : l'étape « Add python.exe to PATH » est spécifique à Windows et n'est pas nécessaire sur macOS/Linux, car `python3`/`pip3` sont normalement déjà accessibles.
 - **Installation de rembg** : utilisez `pip3` plutôt que `pip` si Python 2 et 3 sont tous les deux présents :
 ```bash
   pip3 install "rembg[cpu,cli]"
@@ -187,9 +213,9 @@ Le greffon est désormais disponible dans le menu :
 ```bash
   chmod +x ia_detourage.py
 ```
-- **Ligne shebang** : le script pourrait nécessiter une ligne `#!/usr/bin/env python3` en tout début de fichier pour être correctement détecté hors Windows — vérifiez le fichier `.py` si GIMP ne le détecte pas.
+- **Ligne shebang** : le script commence déjà par `#!/usr/bin/env python3`, ce qui devrait suffire pour que GIMP le détecte correctement hors Windows.
 Si vous parvenez à le faire fonctionner de façon fiable sous macOS ou Linux, les contributions/PR documentant la procédure exacte sont les bienvenues.
  
 ### Licence
  
-*licence MIT*
+* licence MIT*
