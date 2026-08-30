@@ -20,9 +20,7 @@ Unlike other plugins, this script uses a subprocess approach. The AI model does 
 * **CPU Mode (Standard):** ~40 seconds per image *(universal compatibility with zero hardware config)*.
   
 ---
-FR # GIMP 3 - Greffon de Détourage IA (AI Background Removal)
-
-*(English version below)*
+🇫🇷  # GIMP 3 - Greffon de Détourage IA (AI Background Removal)
 
 🇫🇷 **Greffon ultra-stable pour GIMP 3.0 permettant de détourer automatiquement vos images grâce à l'Intelligence Artificielle (via `rembg`).**
 
