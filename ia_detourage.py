@@ -5,15 +5,15 @@ import sys
 import os
 import tempfile
 import subprocess
+import time
 import gi
 
 # === CONFIGURATION UTILISATEUR ============================================
-# Par défaut, utilise le Python déclaré dans le PATH de Windows.
-# Si une erreur survient, remplacez "python" par votre chemin absolu.
-# Exemple : CHEMIN_PYTHON = r"C:\Users\nom\AppData\Local\Programs\Python\Python31\python.exe"
-# CHEMIN_PYTHON = r"C:\Users\votre_nom\AppData\Local\Programs\Python\Python314\python.exe"
+# Chemin absolu (pour vos tests locaux actuels) :
+CHEMIN_PYTHON = r"C:\Users\name\AppData\Local\Programs\Python\Python314\python.exe"
+
+# ⚠️ Pour la version publique à distribuer, remettez simplement : 
 # CHEMIN_PYTHON = "python"
-CHEMIN_PYTHON = "python"
 # ==========================================================================
 
 gi.require_version('Gimp', '3.0')
@@ -84,23 +84,22 @@ class IaDetouragePlugin(Gimp.PlugIn):
             
             Gimp.progress_set_text("Détourage IA en arrière-plan...")
             
-            # Utilisation de la configuration définie en haut du fichier
             python_exe = CHEMIN_PYTHON
             
-            # Création d'un script Python temporaire pour forcer l'usage du GPU (CUDA)
-            script_path = os.path.join(temp_dir, "run_rembg_cuda.py")
+            script_path = os.path.join(temp_dir, "run_rembg_worker.py")
             with open(script_path, "w", encoding="utf-8") as f:
                 f.write(f"""
-from rembg import remove, new_session
-from PIL import Image
+import sys
+try:
+    from rembg import remove, new_session
+    from PIL import Image
+except ImportError:
+    print("ERREUR_MODULE_MANQUANT", file=sys.stderr)
+    sys.exit(1)
 
-# 1. Tenter d'utiliser CUDA (GPU), sinon basculer sur le CPU
-session = new_session('u2netp', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
-
-# 2. Ouvrir l'image exportée par GIMP
+# L'IA détecte automatiquement CPU ou GPU en fonction de ce qui est installé
+session = new_session('u2netp')
 img = Image.open(r"{file_in_path}")
-
-# 3. Appliquer le détourage avec les paramètres de l'interface
 out = remove(
     img, 
     session=session, 
@@ -109,17 +108,47 @@ out = remove(
     alpha_matting_background_threshold={bg_thresh},
     alpha_matting_erode_size={erode_val}
 )
-
-# 4. Sauvegarder le résultat pour GIMP
 out.save(r"{file_out_path}")
 """)
                 
             cmd = [python_exe, script_path]
 
-            # Exécution du script
-            subprocess.run(cmd, check=True, creationflags=0x08000000)
+# --- NETTOYAGE DE LA BULLE GIMP ---
+            env_windows = os.environ.copy()
+            env_windows.pop('PYTHONPATH', None)
+            env_windows.pop('PYTHONHOME', None)
             
-            # Nettoyage du fichier temporaire
+            # On supprime GIMP du PATH pour forcer Windows à utiliser le vrai Python
+            if 'PATH' in env_windows:
+                chemins = env_windows['PATH'].split(os.pathsep)
+                chemins_propres = [c for c in chemins if 'gimp' not in c.lower()]
+                env_windows['PATH'] = os.pathsep.join(chemins_propres)
+# ----------------------------------
+
+            # --- Lancement en arrière-plan sans bloquer GIMP ---
+            process = subprocess.Popen(
+                cmd, 
+                env=env_windows, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                text=True, 
+                creationflags=0x08000000
+            )
+           
+            # Boucle d'attente : on anime la barre tant que l'IA travaille
+            while process.poll() is None:
+                Gimp.progress_pulse()  # Fait faire un va-et-vient à la barre
+                time.sleep(0.2)        # Courte pause de 200ms
+            
+            # L'IA a terminé, on récupère le texte de la console
+            stdout, stderr = process.communicate()
+            
+            if process.returncode != 0:
+                if "ERREUR_MODULE_MANQUANT" in stderr:
+                    raise Exception("Le module IA n'a pas été trouvé par Python.\n\nVeuillez ouvrir l'Invite de commandes (cmd) Windows et taper exactement :\npip install \"rembg[cpu,cli]\"")
+                else:
+                    raise Exception(f"Détail technique du plantage :\n{stderr}")
+            
             if os.path.exists(script_path):
                 try:
                     os.remove(script_path)
@@ -152,10 +181,16 @@ out.save(r"{file_out_path}")
             Gimp.context_pop()
             Gimp.displays_flush()
 
-            # FIN SILENCIEUSE ET PROPRE
             return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
         except Exception as e:
+            # Fermeture de sécurité du groupe d'annulation (empêche l'erreur 'inconsistent state')
+            try:
+                image.undo_group_end()
+                Gimp.context_pop()
+            except:
+                pass
+                
             Gimp.message(f"Erreur du greffon IA :\n{str(e)}")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
