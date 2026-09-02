@@ -8,6 +8,7 @@ import tempfile
 import subprocess
 import time
 import shutil
+import venv
 import gi
 
 gi.require_version('Gimp', '3.0')
@@ -27,9 +28,7 @@ def _creation_flags():
 
 
 def get_cache_path():
-    """Retourne le chemin du fichier de cache de l'environnement Python.
-    Utilise le dossier de config GIMP (persistant, pas nettoyable par un
-    utilitaire de nettoyage disque) avec repli sur le dossier temp système."""
+    """Retourne le chemin du fichier de cache de l'environnement Python."""
     try:
         return os.path.join(Gimp.directory(), "ia_detourage_python_cache.txt")
     except Exception:
@@ -37,10 +36,7 @@ def get_cache_path():
 
 
 def get_clean_env():
-    """Nettoie les variables d'environnement héritées de GIMP (PYTHONPATH,
-    PYTHONHOME, et dossiers GIMP du PATH) pour ne pas empoisonner le Python
-    système. Utilisé à la fois pour la détection ET l'exécution finale, afin
-    que le test 'import rembg' reflète fidèlement les conditions réelles."""
+    """Nettoie les variables d'environnement héritées de GIMP."""
     env_clean = os.environ.copy()
     env_clean.pop('PYTHONPATH', None)
     env_clean.pop('PYTHONHOME', None)
@@ -64,14 +60,25 @@ def invalidate_cache():
 
 # ============================================================================
 # Stratégies de recherche d'un interpréteur Python
-# Chacune est indépendante : si le PATH hérité par GIMP est périmé ou
-# incomplet, les autres stratégies (py launcher, registre, scan disque)
-# prennent le relais sans en dépendre.
 # ============================================================================
 
+def _candidats_via_conventions_unix():
+    """Stratégie A (Linux/macOS) : Vérifie les emplacements venv habituels
+    au cas où l'utilisateur en aurait déjà créé un (ex: l'abonné Eric)."""
+    if os.name == "nt":
+        return []
+    
+    home = os.path.expanduser("~")
+    candidats = [
+        os.path.join(home, ".local", "share", "gimp_ia_detourage", "venv", "bin", "python3"),
+        os.path.join(home, "rembg", ".venv", "bin", "python3"),
+        os.path.join(home, ".venvs", "rembg", "bin", "python3"),
+        os.path.join(home, ".virtualenvs", "rembg", "bin", "python3")
+    ]
+    return candidats
+
+
 def _candidats_via_path(env_clean):
-    """Stratégie 1 : recherche via PATH (where/which).
-    Fragile si le PATH hérité par GIMP est périmé ou incomplet."""
     candidats = []
     noms_commande = ["python3", "python"] if os.name != "nt" else ["python", "python3"]
 
@@ -104,11 +111,7 @@ def _candidats_via_path(env_clean):
 
 
 def _candidats_via_py_launcher(env_clean):
-    """Stratégie 2 (Windows uniquement) : le lanceur 'py' lit le registre
-    Windows, pas le PATH — il retrouve les installations même si le PATH
-    hérité par GIMP est obsolète ou incomplet."""
-    if os.name != "nt":
-        return []
+    if os.name != "nt": return []
     candidats = []
     try:
         out = subprocess.check_output(
@@ -117,7 +120,6 @@ def _candidats_via_py_launcher(env_clean):
         )
         for ligne in out.splitlines():
             ligne = ligne.strip()
-            # Format typique : "-3.14-64 * C:\...\python.exe"
             if ligne.lower().endswith("python.exe"):
                 chemin = ligne.split()[-1]
                 candidats.append(chemin)
@@ -127,10 +129,7 @@ def _candidats_via_py_launcher(env_clean):
 
 
 def _candidats_via_registre():
-    """Stratégie 3 (Windows uniquement) : lecture directe du registre
-    Windows (HKCU puis HKLM), indépendante du PATH et du lanceur py."""
-    if os.name != "nt":
-        return []
+    if os.name != "nt": return []
     candidats = []
     try:
         import winreg
@@ -161,11 +160,7 @@ def _candidats_via_registre():
 
 
 def _candidats_via_scan_disque():
-    """Stratégie 4 (Windows uniquement, dernier recours) : scan direct des
-    emplacements d'installation standards, sans dépendre du PATH,
-    du registre ni du lanceur py."""
-    if os.name != "nt":
-        return []
+    if os.name != "nt": return []
     candidats = []
     local_appdata = os.environ.get("LOCALAPPDATA", "")
     program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
@@ -184,32 +179,25 @@ def _candidats_via_scan_disque():
 
 
 def find_valid_python():
-    """Cherche un interpréteur Python valide contenant rembg, en excluant
-    celui de GIMP. Combine plusieurs stratégies indépendantes du PATH, et
-    teste chaque candidat avec l'environnement nettoyé (env_clean) — le même
-    que celui utilisé pour l'exécution finale du worker — afin d'éviter tout
-    faux positif entre la phase de détection et l'exécution réelle."""
     gimp_bin = os.path.dirname(sys.executable)
     env_clean = get_clean_env()
 
     candidats = []
+    candidats += _candidats_via_conventions_unix()
     candidats += _candidats_via_path(env_clean)
     candidats += _candidats_via_py_launcher(env_clean)
     candidats += _candidats_via_registre()
     candidats += _candidats_via_scan_disque()
 
-    # Nettoyage des doublons tout en conservant l'ordre
     candidats = list(dict.fromkeys(candidats))
 
     for exe in candidats:
         if not exe or not os.path.exists(exe):
             continue
-        # Exclusion stricte du Python embarqué par GIMP
         if os.path.dirname(exe).lower() == gimp_bin.lower():
             continue
 
         try:
-            # Test dans l'environnement assaini, identique à celui du worker final
             r = subprocess.run(
                 [exe, "-c", "import rembg"], capture_output=True,
                 timeout=10, creationflags=_creation_flags(), env=env_clean
@@ -223,8 +211,6 @@ def find_valid_python():
 
 
 def get_cached_python(force_refresh=False):
-    """Récupère le chemin Python depuis le cache, ou lance la recherche si
-    nécessaire ou si le cache est absent/périmé."""
     cache_file = get_cache_path()
 
     if not force_refresh and os.path.exists(cache_file):
@@ -238,9 +224,52 @@ def get_cached_python(force_refresh=False):
         with open(cache_file, 'w', encoding='utf-8') as f:
             f.write(exe)
     else:
-        # Aucun candidat valide : on invalide un éventuel cache périmé
         invalidate_cache()
     return exe
+
+
+# ============================================================================
+# Création automatique de l'environnement virtuel (Linux/macOS)
+# ============================================================================
+
+def setup_unix_venv():
+    """Option B : Crée un venv dédié et installe les dépendances."""
+    home = os.path.expanduser("~")
+    venv_dir = os.path.join(home, ".local", "share", "gimp_ia_detourage", "venv")
+    python_exe = os.path.join(venv_dir, "bin", "python3")
+
+    if not os.path.exists(venv_dir):
+        Gimp.progress_set_text("Création de l'environnement virtuel local...")
+        try:
+            venv.create(venv_dir, with_pip=True)
+        except Exception as e:
+            raise Exception(
+                f"Impossible de créer l'environnement virtuel.\n"
+                f"Sur certaines distributions (comme Ubuntu), il manque le paquet de base.\n"
+                f"Ouvrez un terminal et tapez :\nsudo apt install python3-venv\n\nDétail: {e}"
+            )
+
+    Gimp.progress_set_text("Installation du module IA (peut durer plusieurs minutes)...")
+    env_clean = get_clean_env()
+    
+    # Installation de rembg et onnxruntime pour l'optimisation matérielle
+    process = subprocess.Popen(
+        [python_exe, "-m", "pip", "install", "--upgrade", "pip", "rembg[cpu,cli]", "onnxruntime"],
+        env=env_clean,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    while process.poll() is None:
+        Gimp.progress_pulse()
+        time.sleep(0.2)
+
+    if process.returncode != 0:
+        _, stderr = process.communicate()
+        raise Exception(f"Erreur lors de l'installation des dépendances IA :\n{stderr}")
+
+    return python_exe
 
 
 # ============================================================================
@@ -311,11 +340,21 @@ class IaDetouragePlugin(Gimp.PlugIn):
             python_exe = get_cached_python()
 
             if not python_exe:
-                raise Exception(
-                    "Le module IA n'a pas été trouvé dans les environnements Python de "
-                    "votre système.\n\nVeuillez ouvrir l'Invite de commandes (cmd) Windows "
-                    "et taper exactement :\npip install \"rembg[cpu,cli]\""
-                )
+                if os.name == "nt":
+                    raise Exception(
+                        "Le module IA n'a pas été trouvé dans les environnements Python de "
+                        "votre système.\n\nVeuillez ouvrir l'Invite de commandes (cmd) Windows "
+                        "et taper exactement :\npip install \"rembg[cpu,cli]\""
+                    )
+                else:
+                    # Linux/macOS : On lance l'auto-installation
+                    python_exe = setup_unix_venv()
+                    if python_exe:
+                        # Mise à jour du cache
+                        with open(get_cache_path(), 'w', encoding='utf-8') as f:
+                            f.write(python_exe)
+                    else:
+                        raise Exception("L'installation automatique de l'environnement virtuel a échoué.")
 
             Gimp.progress_set_text("Détourage IA en arrière-plan...")
 
@@ -330,7 +369,6 @@ except ImportError:
     print("ERREUR_MODULE_MANQUANT", file=sys.stderr)
     sys.exit(1)
 
-# L'IA détecte automatiquement CPU ou GPU en fonction de ce qui est installé
 session = new_session('u2netp')
 img = Image.open(r"{file_in_path}")
 out = remove(
@@ -363,16 +401,10 @@ out.save(r"{file_out_path}")
 
             if process.returncode != 0:
                 if "ERREUR_MODULE_MANQUANT" in stderr:
-                    # Le cache pointait vers un environnement devenu invalide :
-                    # on l'invalide pour forcer une nouvelle détection au
-                    # prochain essai, sans que l'utilisateur ait à intervenir.
                     invalidate_cache()
                     raise Exception(
-                        "Le module IA n'a pas été trouvé par Python.\n\nVeuillez ouvrir "
-                        "l'Invite de commandes (cmd) Windows et taper exactement :\n"
-                        "pip install \"rembg[cpu,cli]\"\n\n"
-                        "Si le problème persiste, relancez simplement le greffon : "
-                        "une nouvelle recherche d'environnement sera effectuée."
+                        "Le module IA n'a pas été trouvé par Python. Le cache a été réinitialisé.\n"
+                        "Veuillez relancer le greffon pour déclencher une nouvelle configuration."
                     )
                 else:
                     raise Exception(f"Détail technique du plantage :\n{stderr}")
