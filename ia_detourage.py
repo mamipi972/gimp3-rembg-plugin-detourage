@@ -8,7 +8,6 @@ import tempfile
 import subprocess
 import time
 import shutil
-import venv
 import gi
 
 gi.require_version('Gimp', '3.0')
@@ -232,42 +231,126 @@ def get_cached_python(force_refresh=False):
 # Création automatique de l'environnement virtuel (Linux/macOS)
 # ============================================================================
 
-def setup_unix_venv():
-    """Option B : Crée un venv dédié et installe les dépendances."""
-    home = os.path.expanduser("~")
-    venv_dir = os.path.join(home, ".local", "share", "gimp_ia_detourage", "venv")
-    python_exe = os.path.join(venv_dir, "bin", "python3")
+def _find_bootstrap_python(env_clean):
+    """Trouve un python3 SYSTÈME (pas celui de GIMP) pour créer le venv.
+    Ce Python n'a pas besoin d'avoir rembg déjà installé — on ne s'en sert
+    que pour lancer `python3 -m venv`, jamais comme interpréteur final."""
+    gimp_bin = os.path.dirname(sys.executable)
+    candidats = []
 
-    if not os.path.exists(venv_dir):
-        Gimp.progress_set_text("Création de l'environnement virtuel local...")
-        try:
-            venv.create(venv_dir, with_pip=True)
-        except Exception as e:
-            raise Exception(
-                f"Impossible de créer l'environnement virtuel.\n"
-                f"Sur certaines distributions (comme Ubuntu), il manque le paquet de base.\n"
-                f"Ouvrez un terminal et tapez :\nsudo apt install python3-venv\n\nDétail: {e}"
-            )
+    for cmd in ("python3", "python"):
+        found = shutil.which(cmd, path=env_clean.get('PATH', os.defpath))
+        if found:
+            candidats.append(found)
 
-    Gimp.progress_set_text("Installation du module IA (peut durer plusieurs minutes)...")
-    env_clean = get_clean_env()
-    
-    # Installation de rembg et onnxruntime pour l'optimisation matérielle
+    # Emplacements courants en repli si le PATH ne suffit pas
+    for p in ("/usr/bin/python3", "/usr/local/bin/python3", "/opt/homebrew/bin/python3"):
+        candidats.append(p)
+
+    for exe in dict.fromkeys(candidats):
+        if exe and os.path.exists(exe) and os.path.dirname(exe).lower() != gimp_bin.lower():
+            return exe
+
+    return None
+
+
+def _run_pip_install_with_timeout(python_exe, env_clean, timeout_seconds=600):
+    """Lance `pip install` avec une limite de temps stricte : sans réseau ou
+    avec un proxy bloquant, un Popen sans timeout tourne indéfiniment et gèle
+    la barre de progression de GIMP sans jamais échouer proprement."""
     process = subprocess.Popen(
-        [python_exe, "-m", "pip", "install", "--upgrade", "pip", "rembg[cpu,cli]", "onnxruntime"],
+        [python_exe, "-m", "pip", "install", "--upgrade", "pip", "rembg[cpu,cli]"],
         env=env_clean,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True
+        text=True,
+        creationflags=_creation_flags()
     )
 
+    started = time.time()
     while process.poll() is None:
         Gimp.progress_pulse()
         time.sleep(0.2)
+        if time.time() - started > timeout_seconds:
+            process.kill()
+            process.communicate()
+            raise Exception(
+                "L'installation du module IA a dépassé le délai imparti "
+                f"({timeout_seconds // 60} min).\n\n"
+                "Vérifiez votre connexion Internet (ou un éventuel proxy "
+                "d'entreprise qui bloquerait pip), puis relancez le greffon."
+            )
 
-    if process.returncode != 0:
-        _, stderr = process.communicate()
-        raise Exception(f"Erreur lors de l'installation des dépendances IA :\n{stderr}")
+    return process.communicate()
+
+
+def setup_unix_venv():
+    """Option B : Crée un venv dédié (via un Python système, jamais celui de
+    GIMP) et y installe les dépendances, avec vérifications à chaque étape."""
+    home = os.path.expanduser("~")
+    venv_dir = os.path.join(home, ".local", "share", "gimp_ia_detourage", "venv")
+    python_exe = os.path.join(venv_dir, "bin", "python3")
+    env_clean = get_clean_env()
+
+    if not os.path.exists(python_exe):
+        bootstrap = _find_bootstrap_python(env_clean)
+        if not bootstrap:
+            raise Exception(
+                "Aucun interpréteur Python système n'a été trouvé pour créer "
+                "l'environnement dédié à l'IA.\n\n"
+                "Installez Python 3 (ex. sur Ubuntu/Debian :\n"
+                "sudo apt install python3 python3-venv)\npuis relancez le greffon."
+            )
+
+        Gimp.progress_set_text("Création de l'environnement virtuel local...")
+        try:
+            result = subprocess.run(
+                [bootstrap, "-m", "venv", venv_dir],
+                capture_output=True, text=True, timeout=120, env=env_clean
+            )
+        except subprocess.TimeoutExpired:
+            raise Exception(
+                "La création de l'environnement virtuel a dépassé le délai imparti (2 min)."
+            )
+        except Exception as e:
+            raise Exception(f"Impossible de créer l'environnement virtuel.\n\nDétail : {e}")
+
+        # Vérification explicite : venv.create peut échouer silencieusement
+        # (paquet python3-venv manquant sur Debian/Ubuntu) sans lever
+        # d'exception Python — on contrôle donc le résultat réel sur disque.
+        if result.returncode != 0 or not os.path.exists(python_exe):
+            raise Exception(
+                "Impossible de créer l'environnement virtuel.\n\n"
+                f"{result.stderr.strip()[-800:]}\n\n"
+                "Sur certaines distributions (comme Ubuntu/Debian), il manque "
+                "le paquet de base. Ouvrez un terminal et tapez :\n"
+                "sudo apt install python3-venv\n\npuis relancez le greffon."
+            )
+
+    # Le venv existe déjà : on vérifie si rembg y est présent avant de
+    # relancer une installation complète inutilement (cf. point 3 ci-dessous).
+    test = subprocess.run(
+        [python_exe, "-c", "import rembg"], capture_output=True,
+        timeout=10, creationflags=_creation_flags(), env=env_clean
+    )
+    if test.returncode == 0:
+        return python_exe
+
+    Gimp.progress_set_text("Installation du module IA (peut durer plusieurs minutes)...")
+    _, stderr = _run_pip_install_with_timeout(python_exe, env_clean)
+
+    # Revérification finale : pip peut retourner 0 dans de rares cas partiels
+    # sans que le module soit réellement importable ensuite.
+    test = subprocess.run(
+        [python_exe, "-c", "import rembg"], capture_output=True,
+        timeout=10, creationflags=_creation_flags(), env=env_clean
+    )
+    if test.returncode != 0:
+        raise Exception(
+            "L'installation du module IA a échoué.\n\n"
+            f"{stderr.strip()[-800:]}\n\n"
+            "Vérifiez votre connexion Internet, puis relancez le greffon."
+        )
 
     return python_exe
 
@@ -347,14 +430,12 @@ class IaDetouragePlugin(Gimp.PlugIn):
                         "et taper exactement :\npip install \"rembg[cpu,cli]\""
                     )
                 else:
-                    # Linux/macOS : On lance l'auto-installation
+                    # Linux/macOS : on lance l'auto-installation. setup_unix_venv()
+                    # renvoie toujours un chemin valide ou lève une exception
+                    # explicite — jamais de retour vide à gérer ici.
                     python_exe = setup_unix_venv()
-                    if python_exe:
-                        # Mise à jour du cache
-                        with open(get_cache_path(), 'w', encoding='utf-8') as f:
-                            f.write(python_exe)
-                    else:
-                        raise Exception("L'installation automatique de l'environnement virtuel a échoué.")
+                    with open(get_cache_path(), 'w', encoding='utf-8') as f:
+                        f.write(python_exe)
 
             Gimp.progress_set_text("Détourage IA en arrière-plan...")
 
