@@ -84,33 +84,56 @@ Each candidate is actually tested (`import rembg`) before being accepted — the
 | Detection picks a stale/invalid Python | The system changed since the last successful detection (Python moved, uninstalled, etc.) | Just run the plugin again — the invalid entry is detected and a fresh search happens automatically |
 | First run is very slow | AI model not pre-downloaded, or first-time Python detection | Run the `new_session('u2netp')` command from Step 2 to pre-download the model; the one-time detection delay is normal and only happens once |
  
-### macOS / Linux — untested adaptation notes
- 
-> ⚠️ **These instructions are only a proposal.** This plugin was written and tested on Windows only. The automatic detection includes a `which python3` fallback that should work on macOS/Linux, but the `py` launcher, registry lookup, and disk-scan strategies are Windows-specific and simply skip themselves on other platforms — detection there relies on PATH alone, so keep Python properly on your PATH. Expect to debug paths and permissions yourself.
- 
-- **Python & pip**: macOS and most Linux distributions already ship with Python 3. Check with `python3 --version` in a terminal. If missing, install it via [python.org](https://www.python.org/downloads/) (macOS) or your package manager, e.g. `sudo apt install python3 python3-pip` (Debian/Ubuntu).
-- **Installing rembg**: use `pip3` instead of `pip` if both Python 2 and 3 are present:
-```bash
-  pip3 install "rembg[cpu,cli]"
-```
-- **Pre-downloading the model**:
-```bash
-  python3 -c "from rembg import new_session; new_session('u2netp')"
-```
-- **Plug-ins folder** — this is the part most likely to need adjustment:
-  - **macOS**: typically `~/Library/Application Support/GIMP/3.0/plug-ins`
-  - **Linux**: typically `~/.config/GIMP/3.0/plug-ins`
-  - You can confirm the exact path from inside GIMP via **Edit ▸ Preferences ▸ Folders ▸ Plug-ins**.
-- **Script permissions**: on macOS/Linux, the plugin file may need to be made executable:
-```bash
-  chmod +x ia_detourage.py
-```
-- **Shebang line**: the script already starts with `#!/usr/bin/env python3`, which should be enough for GIMP to detect it correctly outside Windows.
-If you get it working reliably on macOS or Linux, contributions/PRs documenting the exact steps are welcome.
- 
-### License
- 
-*license MIT*
+## macOS / Linux — Automated Installation (Zero-Config)
+
+This plugin is fully compatible with **macOS** and **Linux**. To comply with the standards of recent Linux distributions — particularly Ubuntu and Debian, which discourage global installations via `pip` — the plugin manages its own dependencies automatically.
+
+### How does it work?
+
+When the plugin is launched from GIMP for the first time, it checks whether an existing virtual environment is available. If none is found, it automatically creates an isolated virtual environment.
+
+It then downloads and installs `rembg` and all of its dependencies into this environment.
+
+### Installation
+
+1. **Prerequisites**
+
+   macOS and most Linux distributions already include Python 3.
+
+   On Debian/Ubuntu, however, you may need to install the package required to create virtual environments:
+
+   ```bash
+   sudo apt install python3-venv
+   ```
+
+2. **Plugin directory**
+
+   Place the `ia_detourage.py` file in GIMP's plugin directory.
+
+   - **macOS**: usually `~/Library/Application Support/GIMP/3.0/plug-ins`
+   - **Linux**: usually `~/.config/GIMP/3.0/plug-ins`
+
+   > **Tip:** You can confirm the exact path in GIMP via **Edit ▸ Preferences ▸ Folders ▸ Plug-ins**.
+
+3. **Script permissions**
+
+   On macOS and Linux, the script must be made executable so that GIMP can detect it:
+
+   ```bash
+   chmod +x ia_detourage.py
+   ```
+
+4. **First launch**
+
+   The first time you use the plugin in GIMP, please wait a few moments.
+
+   A progress bar will indicate the download of the AI module and its pre-trained model.
+
+   Subsequent launches will start immediately.
+
+## License
+
+This plugin is distributed under the **MIT License**.
  
 ---
  
@@ -191,31 +214,51 @@ Chaque candidat trouvé est réellement testé (`import rembg`) avant d'être ac
 | Erreur « Module IA introuvable » | Aucune installation Python avec `rembg` n'a pu être trouvée automatiquement | Ouvrez l'Invite de commandes et lancez `pip install "rembg[cpu,cli]"`, puis relancez simplement le greffon — aucune modification de fichier n'est nécessaire |
 | La détection retombe sur un Python périmé/invalide | Le système a changé depuis la dernière détection réussie (Python déplacé, désinstallé, etc.) | Relancez simplement le greffon — l'entrée invalide est détectée et une nouvelle recherche se déclenche automatiquement |
 | Premier lancement très lent | Modèle IA non pré-téléchargé, ou première détection Python | Exécutez la commande `new_session('u2netp')` de l'Étape 2 pour pré-télécharger le modèle ; le délai de détection ponctuel est normal et ne se produit qu'une seule fois |
- 
-### macOS / Linux — pistes d'adaptation non testées
- 
-> ⚠️ **Ces indications sont une proposition, sans certitude qu'elles fonctionnent telles quelles.** Ce greffon a été écrit et testé uniquement sous Windows. La détection automatique inclut un repli `which python3` qui devrait fonctionner sur macOS/Linux, mais les stratégies du lanceur `py`, de lecture du registre et de scan disque sont spécifiques à Windows et se désactivent simplement sur les autres systèmes — la détection y repose donc uniquement sur le PATH, veillez à ce que Python y soit correctement présent. Attendez-vous à devoir ajuster vous-même certains chemins et permissions.
- 
-- **Python & pip** : macOS et la plupart des distributions Linux incluent déjà Python 3. Vérifiez avec `python3 --version` dans un terminal. S'il est absent, installez-le via [python.org](https://www.python.org/downloads/) (macOS) ou votre gestionnaire de paquets, par exemple `sudo apt install python3 python3-pip` (Debian/Ubuntu).
-- **Installation de rembg** : utilisez `pip3` plutôt que `pip` si Python 2 et 3 sont tous les deux présents :
-```bash
-  pip3 install "rembg[cpu,cli]"
-```
-- **Pré-téléchargement du modèle** :
-```bash
-  python3 -c "from rembg import new_session; new_session('u2netp')"
-```
-- **Dossier des greffons** — c'est le point qui nécessite le plus probablement un ajustement :
-  - **macOS** : généralement `~/Library/Application Support/GIMP/3.0/plug-ins`
-  - **Linux** : généralement `~/.config/GIMP/3.0/plug-ins`
-  - Vous pouvez confirmer le chemin exact depuis GIMP via **Édition ▸ Préférences ▸ Dossiers ▸ Greffons**.
-- **Permissions du script** : sur macOS/Linux, il peut être nécessaire de rendre le fichier exécutable :
-```bash
-  chmod +x ia_detourage.py
-```
-- **Ligne shebang** : le script commence déjà par `#!/usr/bin/env python3`, ce qui devrait suffire pour que GIMP le détecte correctement hors Windows.
-Si vous parvenez à le faire fonctionner de façon fiable sous macOS ou Linux, les contributions/PR documentant la procédure exacte sont les bienvenues.
- 
-### Licence
- 
-* licence MIT*
+ ## macOS / Linux — Installation automatisée (Zero-Config)
+
+Ce greffon est pleinement compatible avec **macOS** et **Linux**. Pour respecter les standards des distributions récentes — notamment Ubuntu et Debian, qui déconseillent les installations globales via `pip` — le greffon gère automatiquement ses propres dépendances.
+
+### Comment ça fonctionne ?
+
+Au premier lancement depuis GIMP, si le greffon ne trouve pas d'environnement virtuel existant, il en crée automatiquement un, de manière isolée. Il télécharge ensuite et installe `rembg` ainsi que toutes ses dépendances.
+
+### Installation
+
+1. **Prérequis**
+
+   macOS et la plupart des distributions Linux incluent déjà Python 3.
+
+   Sur Debian/Ubuntu, il peut toutefois être nécessaire d'installer le paquet permettant de créer des environnements virtuels :
+
+   ```bash
+   sudo apt install python3-venv
+   ```
+
+2. **Dossier des greffons**
+
+   Placez le fichier `ia_detourage.py` dans le dossier des greffons de GIMP.
+
+   - **macOS** : généralement `~/Library/Application Support/GIMP/3.0/plug-ins`
+   - **Linux** : généralement `~/.config/GIMP/3.0/plug-ins`
+
+   > **Astuce :** vous pouvez confirmer le chemin exact depuis GIMP via **Édition ▸ Préférences ▸ Dossiers ▸ Greffons**.
+
+3. **Permissions du script**
+
+   Sur macOS et Linux, le script doit être rendu exécutable pour que GIMP puisse le détecter :
+
+   ```bash
+   chmod +x ia_detourage.py
+   ```
+
+4. **Premier lancement**
+
+   Lors de votre première utilisation du greffon dans GIMP, patientez quelques instants.
+
+   Une barre de progression vous indiquera le téléchargement du module d'IA et de son modèle pré-entraîné.
+
+   Les lancements suivants seront immédiats.
+
+## Licence
+
+Ce greffon est distribué sous **licence MIT**.
