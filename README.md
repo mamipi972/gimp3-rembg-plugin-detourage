@@ -23,7 +23,7 @@ Unlike other plugins, this script runs the AI model in a **separate subprocess**
 |---|---|
 | GIMP | 3.0+ |
 | Python | 3.9+ (with `pip`), installed **separately from GIMP** |
-| OS | Windows (see notes below for macOS/Linux) |
+| OS | Windows, macOS, or Linux (setup differs by platform — see below) |
  
 > ℹ️ GIMP 3 ships with its own internal Python interpreter (used to run this very plugin). That internal copy is intentionally **never used** to run the AI model — the plugin always looks for a separate, regular Python installation on your system instead.
  
@@ -84,27 +84,33 @@ Each candidate is actually tested (`import rembg`) before being accepted — the
 | Detection picks a stale/invalid Python | The system changed since the last successful detection (Python moved, uninstalled, etc.) | Just run the plugin again — the invalid entry is detected and a fresh search happens automatically |
 | First run is very slow | AI model not pre-downloaded, or first-time Python detection | Run the `new_session('u2netp')` command from Step 2 to pre-download the model; the one-time detection delay is normal and only happens once |
  
-## macOS / Linux — Automated Installation (Zero-Config)
+### macOS / Linux — Automated Installation (Zero-Config)
 
-This plugin is fully compatible with **macOS** and **Linux**. To comply with the standards of recent Linux distributions — particularly Ubuntu and Debian, which discourage global installations via `pip` — the plugin manages its own dependencies automatically.
+This plugin is fully compatible with **macOS** and **Linux**. To comply with the standards of recent Linux distributions — particularly Ubuntu and Debian, which block global installations via `pip` (the "externally-managed-environment" restriction, aka PEP 668) — the plugin manages its own isolated Python environment automatically. **No terminal command is required on your part.**
 
-### How does it work?
+#### How does it work?
 
-When the plugin is launched from GIMP for the first time, it checks whether an existing virtual environment is available. If none is found, it automatically creates an isolated virtual environment.
+On every launch, the plugin first checks a few things, in order, before doing anything else:
 
-It then downloads and installs `rembg` and all of its dependencies into this environment.
+1. **Already-cached result** — if a working environment was found on a previous run, it's reused instantly.
+2. **Existing virtual environments** — the plugin checks a handful of common venv locations, in case you (or a previous troubleshooting session) already created one manually, e.g. `~/.venvs/rembg`, `~/rembg/.venv`, `~/.virtualenvs/rembg`, or the plugin's own dedicated folder.
+3. **System PATH** (`which python3`) — in case a system-wide installation with `rembg` already exists (uncommon on modern Ubuntu/Debian due to PEP 668, but common on macOS or older systems).
 
-### Installation
+**Only if none of the above succeeds**, the plugin creates its own dedicated, isolated virtual environment — completely separate from GIMP's internal Python and from your system Python — and installs `rembg` into it automatically. This uses a **system Python** purely as a bootstrap to create the environment (GIMP's own internal Python is never used for this, and never will be, since it doesn't ship with the tools needed to manage packages reliably).
+
+This first-time setup happens only once; the result is cached (in GIMP's own config folder) for all future launches.
+
+#### Installation
 
 1. **Prerequisites**
 
-   macOS and most Linux distributions already include Python 3.
-
-   On Debian/Ubuntu, however, you may need to install the package required to create virtual environments:
+   macOS and most Linux distributions already include Python 3. To let the plugin create its own environment, Debian/Ubuntu also needs the `venv` module available:
 
    ```bash
    sudo apt install python3-venv
    ```
+
+   If this package is missing, the plugin will detect it and show you this exact command in its error dialog — you won't need to guess it.
 
 2. **Plugin directory**
 
@@ -125,11 +131,19 @@ It then downloads and installs `rembg` and all of its dependencies into this env
 
 4. **First launch**
 
-   The first time you use the plugin in GIMP, please wait a few moments.
+   The first time you use the plugin in GIMP, please wait — this one-time setup involves creating the environment and downloading `rembg` and its dependencies (roughly **1 to 5 minutes** depending on your connection). A progress bar will animate throughout. If it takes longer than **10 minutes**, the plugin will stop and show a network-related error rather than freezing GIMP indefinitely.
 
-   A progress bar will indicate the download of the AI module and its pre-trained model.
+   Subsequent launches start immediately, using the cached environment.
 
-   Subsequent launches will start immediately.
+#### Troubleshooting (macOS / Linux)
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| "Impossible de créer l'environnement virtuel" / `python3-venv` mentioned in the error | The `venv` module isn't installed (common on fresh Debian/Ubuntu installs) | Run `sudo apt install python3-venv` in a terminal, then try the plugin again |
+| "Aucun interpréteur Python système n'a été trouvé" | No usable Python 3 outside GIMP's own bundled copy could be located | Install Python 3 via your package manager (e.g. `sudo apt install python3 python3-venv`) or from [python.org](https://www.python.org/downloads/) (macOS) |
+| Setup seems to hang for a long time, then fails with a timeout message | No internet connection, or a proxy/firewall is blocking `pip` | Check your connection (and any corporate proxy settings), then simply run the plugin again |
+| "L'installation du module IA a échoué" with pip output shown | A transient install error, or an incompatible/unsupported architecture (e.g. some ARM boards) | Read the pip error detail shown in the message; on ARM systems, some scientific packages may need to compile from source, which can take longer or require extra system packages |
+| Plugin doesn't appear in the menu | Wrong plug-ins folder, GIMP not restarted, or the script isn't executable | Double-check the folder path, run `chmod +x ia_detourage.py`, and restart GIMP |
 
 ## License
 
@@ -152,7 +166,7 @@ This plugin is distributed under the **MIT License**.
 |---|---|
 | GIMP | 3.0+ |
 | Python | 3.9+ (avec `pip`), installé **séparément de GIMP** |
-| Système | Windows (voir remarques ci-dessous pour macOS/Linux) |
+| Système | Windows, macOS ou Linux (l'installation diffère selon la plateforme — voir plus bas) |
  
 > ℹ️ GIMP 3 embarque son propre interpréteur Python interne (celui qui exécute ce greffon). Cette copie interne n'est volontairement **jamais utilisée** pour exécuter le modèle IA — le greffon recherche toujours une installation Python distincte et classique sur votre système.
  
@@ -214,25 +228,33 @@ Chaque candidat trouvé est réellement testé (`import rembg`) avant d'être ac
 | Erreur « Module IA introuvable » | Aucune installation Python avec `rembg` n'a pu être trouvée automatiquement | Ouvrez l'Invite de commandes et lancez `pip install "rembg[cpu,cli]"`, puis relancez simplement le greffon — aucune modification de fichier n'est nécessaire |
 | La détection retombe sur un Python périmé/invalide | Le système a changé depuis la dernière détection réussie (Python déplacé, désinstallé, etc.) | Relancez simplement le greffon — l'entrée invalide est détectée et une nouvelle recherche se déclenche automatiquement |
 | Premier lancement très lent | Modèle IA non pré-téléchargé, ou première détection Python | Exécutez la commande `new_session('u2netp')` de l'Étape 2 pour pré-télécharger le modèle ; le délai de détection ponctuel est normal et ne se produit qu'une seule fois |
- ## macOS / Linux — Installation automatisée (Zero-Config)
+### macOS / Linux — Installation automatisée (Zero-Config)
 
-Ce greffon est pleinement compatible avec **macOS** et **Linux**. Pour respecter les standards des distributions récentes — notamment Ubuntu et Debian, qui déconseillent les installations globales via `pip` — le greffon gère automatiquement ses propres dépendances.
+Ce greffon est pleinement compatible avec **macOS** et **Linux**. Pour respecter les standards des distributions récentes — notamment Ubuntu et Debian, qui **bloquent** les installations globales via `pip` (la restriction « externally-managed-environment », alias PEP 668) — le greffon gère automatiquement son propre environnement Python isolé. **Aucune commande à taper dans un terminal.**
 
-### Comment ça fonctionne ?
+#### Comment ça fonctionne ?
 
-Au premier lancement depuis GIMP, si le greffon ne trouve pas d'environnement virtuel existant, il en crée automatiquement un, de manière isolée. Il télécharge ensuite et installe `rembg` ainsi que toutes ses dépendances.
+À chaque lancement, le greffon vérifie d'abord, dans l'ordre, plusieurs pistes avant d'entreprendre quoi que ce soit :
 
-### Installation
+1. **Un résultat déjà mis en cache** — si un environnement fonctionnel a été trouvé lors d'un lancement précédent, il est réutilisé instantanément.
+2. **Des environnements virtuels déjà existants** — le greffon vérifie quelques emplacements de venv courants, au cas où vous (ou une précédente session de dépannage) en auriez déjà créé un manuellement, par exemple `~/.venvs/rembg`, `~/rembg/.venv`, `~/.virtualenvs/rembg`, ou le dossier dédié du greffon lui-même.
+3. **Le PATH système** (`which python3`) — au cas où une installation globale disposant déjà de `rembg` existerait (rare sur Ubuntu/Debian récent à cause de PEP 668, mais plus courant sur macOS ou des systèmes plus anciens).
+
+**Seulement si rien de tout cela n'aboutit**, le greffon crée son propre environnement virtuel dédié et isolé — totalement distinct du Python interne de GIMP et de votre Python système — et y installe `rembg` automatiquement. Cette création s'appuie sur un **Python système** utilisé uniquement comme point de départ pour créer l'environnement (le Python interne de GIMP n'est jamais utilisé pour cela, et ne le sera jamais, car il n'embarque pas les outils nécessaires pour gérer des paquets de façon fiable).
+
+Cette configuration initiale n'a lieu qu'une seule fois ; le résultat est mis en cache (dans le dossier de configuration de GIMP) pour tous les lancements suivants.
+
+#### Installation
 
 1. **Prérequis**
 
-   macOS et la plupart des distributions Linux incluent déjà Python 3.
-
-   Sur Debian/Ubuntu, il peut toutefois être nécessaire d'installer le paquet permettant de créer des environnements virtuels :
+   macOS et la plupart des distributions Linux incluent déjà Python 3. Pour permettre au greffon de créer son propre environnement, Debian/Ubuntu nécessite également que le module `venv` soit disponible :
 
    ```bash
    sudo apt install python3-venv
    ```
+
+   Si ce paquet est manquant, le greffon le détectera et vous affichera cette commande exacte dans sa boîte de dialogue d'erreur — inutile de la deviner.
 
 2. **Dossier des greffons**
 
@@ -253,11 +275,19 @@ Au premier lancement depuis GIMP, si le greffon ne trouve pas d'environnement vi
 
 4. **Premier lancement**
 
-   Lors de votre première utilisation du greffon dans GIMP, patientez quelques instants.
+   Lors de votre première utilisation du greffon dans GIMP, patientez — cette configuration ponctuelle implique de créer l'environnement puis de télécharger `rembg` et ses dépendances (environ **1 à 5 minutes** selon votre connexion). Une barre de progression s'anime pendant toute cette durée. Si cela dépasse **10 minutes**, le greffon s'arrête et affiche une erreur liée au réseau plutôt que de bloquer GIMP indéfiniment.
 
-   Une barre de progression vous indiquera le téléchargement du module d'IA et de son modèle pré-entraîné.
+   Les lancements suivants démarrent immédiatement, grâce à l'environnement mis en cache.
 
-   Les lancements suivants seront immédiats.
+#### Dépannage (macOS / Linux)
+
+| Symptôme | Cause probable | Solution |
+|---|---|---|
+| « Impossible de créer l'environnement virtuel » / mention de `python3-venv` dans l'erreur | Le module `venv` n'est pas installé (fréquent sur une installation Debian/Ubuntu récente) | Lancez `sudo apt install python3-venv` dans un terminal, puis relancez le greffon |
+| « Aucun interpréteur Python système n'a été trouvé » | Aucun Python 3 utilisable en dehors de la copie interne de GIMP n'a pu être localisé | Installez Python 3 via votre gestionnaire de paquets (ex. `sudo apt install python3 python3-venv`) ou depuis [python.org](https://www.python.org/downloads/) (macOS) |
+| La configuration semble bloquée longtemps, puis échoue avec un message de délai dépassé | Pas de connexion Internet, ou un proxy/pare-feu bloque `pip` | Vérifiez votre connexion (et d'éventuels paramètres de proxy d'entreprise), puis relancez simplement le greffon |
+| « L'installation du module IA a échoué » avec un détail pip affiché | Erreur d'installation ponctuelle, ou architecture incompatible/peu courante (ex. certaines cartes ARM) | Lisez le détail de l'erreur pip affiché ; sur ARM, certains paquets scientifiques peuvent nécessiter une compilation locale, plus longue ou demandant des paquets système supplémentaires |
+| Le greffon n'apparaît pas dans le menu | Mauvais dossier de greffons, GIMP non redémarré, ou script non exécutable | Vérifiez le chemin du dossier, lancez `chmod +x ia_detourage.py`, et redémarrez GIMP |
 
 ## Licence
 
