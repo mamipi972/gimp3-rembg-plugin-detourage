@@ -9,6 +9,10 @@ Unlike other plugins, this script runs the AI model in a **separate subprocess**
 ---
  
 ## 🇬🇧 English
+
+<img width="176" height="219" alt="image" src="https://github.com/user-attachments/assets/f4ee6c3a-9907-4447-8e08-fa8319706b42" /> <img width="173" height="220" alt="image" src="https://github.com/user-attachments/assets/8d039257-e633-4eb5-8d0a-0f58b3bade24" />
+
+
  
 ### Features
  
@@ -152,7 +156,7 @@ This plugin is distributed under the **MIT License**.
 ---
  
 ## 🇫🇷 Français
- 
+ <img width="176" height="219" alt="image" src="https://github.com/user-attachments/assets/f4ee6c3a-9907-4447-8e08-fa8319706b42" /> <img width="173" height="220" alt="image" src="https://github.com/user-attachments/assets/8d039257-e633-4eb5-8d0a-0f58b3bade24" />
 ### Fonctionnalités
  
 - 🛡️ **Anti-crash** — le modèle IA s'exécute en dehors du processus de GIMP
