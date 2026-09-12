@@ -32,7 +32,7 @@ The AI model runs in a **separate subprocess**, never inside GIMP's memory — y
 - 📊 **Animated progress bar** with distinct, readable error messages
 - 🔎 **Honest reporting** — the layer name always states which model ran, and on which hardware
 
-<img width="352" height="438" alt="image" src="https://github.com/user-attachments/assets/4107672a-7665-4273-8b7f-9c701f9004f4" />
+<img width="173" height="220" alt="image" src="https://github.com/user-attachments/assets/4107672a-7665-4273-8b7f-9c701f9004f4" />
 <img width="173" height="220" alt="646951715-8d039257-e633-4eb5-8d0a-0f58b3bade24" src="https://github.com/user-attachments/assets/3aad2261-a406-4fcb-b2f1-7c1ac7a78118" />
 
 ### Requirements
@@ -315,7 +315,8 @@ MIT.
 - 🖥️ **Accélération NVIDIA optionnelle** — décochée par défaut, refusée d'emblée si votre machine ne peut pas réellement s'en servir
 - 📊 **Barre de progression animée**, messages d'erreur distincts et lisibles
 - 🔎 **Rapport honnête** — le nom du calque indique toujours quel modèle a tourné, et sur quel matériel
-<img width="352" height="438" alt="image" src="https://github.com/user-attachments/assets/4107672a-7665-4273-8b7f-9c701f9004f4" />
+
+<img width="173" height="220" alt="image" src="https://github.com/user-attachments/assets/4107672a-7665-4273-8b7f-9c701f9004f4" />
 <img width="173" height="220" alt="646951715-8d039257-e633-4eb5-8d0a-0f58b3bade24" src="https://github.com/user-attachments/assets/3aad2261-a406-4fcb-b2f1-7c1ac7a78118" />
 ### Prérequis
 
