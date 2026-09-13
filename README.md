@@ -12,9 +12,9 @@ The AI model runs in a **separate subprocess**, never inside GIMP's memory — y
 
 ## 🇬🇧 English
 
-### What's new in 3.7
+### What's new in 3.11
 
-| | v2.x | v3.7 |
+| | v2.x | v3.11 |
 |---|---|---|
 | Windows setup | manual `pip install` in a terminal | fully automatic |
 | Python environment | your system Python | dedicated, isolated, shared across the plugin suite |
@@ -129,14 +129,19 @@ from clicking *Valider* to the layer appearing.
 
 | Situation | Time |
 |---|---|
-| First run, CPU engine — environment built and model downloaded | **~10 seconds** |
+| First run, CPU engine — environment built and model downloaded | **~10 seconds** ¹ |
 | First run, GPU engine — `onnxruntime-gpu` plus cuDNN | **~5 minutes** |
 | Any later run, `u2netp` or `u2net`, on the processor | **~10 seconds** |
 | Any later run, `u2net`, on the graphics card | **~10 seconds** |
 
+¹ Measured on a machine where pip had already cached the wheels. On a genuinely
+cold machine, downloading the 566 MB of `rembg`, `scipy` and `scikit-image` is
+bound by your connection and can take several minutes. The progress bar animates
+throughout; nothing is frozen.
+
 Two things worth knowing before you choose.
 
-The CPU engine installs in seconds, not minutes. The five-minute figure belongs
+The CPU engine installs in seconds once the wheels are cached, not minutes. The five-minute figure belongs
 to the GPU variant alone, and almost all of it is downloading
 `onnxruntime-gpu` and cuDNN.
 
@@ -186,6 +191,14 @@ The plugin tries to install cuDNN itself from PyPI (`nvidia-cudnn-cu13`, then
 `nvidia-cudnn-cu12`) so you don't have to fetch it from NVIDIA. That attempt is
 best-effort: if neither variant works, the validation inference fails, and you
 fall back to the processor with an explanation.
+
+> ⚠️ **In practice the GPU path is a Windows feature.** Exposing the CUDA
+> Toolkit and the pip-installed NVIDIA libraries to the engine is done through
+> the process `PATH`, which the plugin only builds on Windows. On Linux and
+> macOS the plugin purges `LD_LIBRARY_PATH` and `DYLD_*` for the isolation
+> reasons described above and does not rebuild a library path, so the validation
+> inference will normally fail and you will be moved to the processor with a
+> message. Ticking the box there costs you a download and gains you nothing.
 
 **Validation is a real inference, not a capability check.** Asking ONNX Runtime
 whether CUDA is "available" returns yes even when cuDNN is missing — the failure
@@ -250,8 +263,10 @@ development, not for reporting a problem.
 |---|---|---|
 | The plugin doesn't appear in the menu at all | Wrong folder, folder name not matching the file name, GIMP not restarted, or the file isn't executable (macOS/Linux) | Re-check step 2. If it still doesn't appear, look for `ia_detourage_diagnostic.log` in `%APPDATA%` (Windows) or your home folder — the plugin writes there as soon as GIMP loads it. **No log file at all means GIMP never ran the file**, which points at the install location, not the plugin |
 | "Aucun interpreteur Python du systeme utilisable" | No Python 3.10+ found outside GIMP | Install Python from python.org, or `sudo apt install python3 python3-venv` |
-| "Impossible de creer l'environnement virtuel" | `python3-venv` missing | `sudo apt install python3-venv`, then run the filter again |
-| Install times out after 15 minutes | No connection, or a corporate proxy blocking `pip` | Check the connection, then run the filter again |
+| "Impossible de creer l'environnement virtuel" | `venv` present but creation failed — permissions, full disk, broken install | Read the log excerpt in the message; on Debian/Ubuntu `sudo apt install python3-venv`, then run the filter again |
+| "Aucun interpreteur Python du systeme utilisable" **on Debian/Ubuntu with Python installed** | The plugin rejects an interpreter that cannot create a venv, so a missing `python3-venv` surfaces here rather than at creation time | `sudo apt install python3-venv`, then run the filter again |
+| An install step times out | No connection, or a corporate proxy blocking `pip` | Check the connection, then run the filter again. Each install step has its own 15-minute budget, and the GPU variant runs up to four of them, so a fully blocked network can keep the dialog busy well beyond 15 minutes |
+| "Le detourage a depasse le delai de 10 minutes" | Usually a large image, but on a first run with `u2net` or `isnet` it can simply be the 170 MB model still downloading | Run it once more: a partially cached model resumes far quicker. If it recurs on the same image, try `u2netp` and untick Refine edges |
 | "Une precedente installation a echoue" | A failure was recorded so it isn't retried endlessly | Tick **"Reparer l'installation"** |
 | "GIMP fonctionne dans un bac a sable Flatpak" | Flatpak build | Use a native package, an AppImage, or the official installer |
 | GPU ticked, layer says "sur processeur" | The CUDA provider didn't register | The plugin already adds the Toolkit's `bin` folder to the engine's search path. What's usually missing is **cuDNN 9**, which must sit alongside the CUDA Toolkit, or a Toolkit version that doesn't match the one `onnxruntime-gpu` expects |
@@ -259,9 +274,29 @@ development, not for reporting a problem.
 | Results look worse with the "better" model | Normal — see [Choosing a model](#choosing-a-model) | Run both and keep the better layer |
 | "Not enough disk space to install the AI engine" | The plugin checks before downloading anything | Free up space: 2 GB for the CPU engine, 5 GB for the GPU one. The message states what's required, what's available and on which volume |
 | "The GPU option was requested but could not be used: cuDNN is missing" | The CUDA Toolkit is installed but cuDNN is not, and the plugin's PyPI attempt didn't succeed | Your layer was still produced, on the processor. Either untick the box, or install cuDNN 9 from nvidia.com matching your CUDA series |
-| GPU ticked, layer says "sur processeur", no warning shown | The warning is shown once per environment and then remembered | The layer name remains the permanent record |
+| GPU ticked, layer says "sur processeur", no warning shown | This applies to the *mismatch* warning of an environment that installed correctly but computed on the CPU: it is shown once per environment, then remembered | The layer name remains the permanent record. The other warning — the GPU path could not be built at all — is shown on **every** run, since you are re-requesting the card each time |
 
 To keep the working folder and its logs after a run, set the environment variable `IA_DETOURAGE_DEBUG=1` before starting GIMP. The folder path is then shown in error messages.
+
+### What this plugin does not guarantee
+
+Stated plainly, because a README that only lists strengths is not a document you
+can rely on.
+
+- **No integrity check on the models.** The weights are downloaded by `rembg`
+  into `models/` on first use. There is no pinned hash and no
+  trust-on-first-use check in this version. The 1 GB threshold bounds how much
+  gets downloaded without asking you, not how much the file can be trusted.
+- **The produced layer is 8-bit.** The source is converted to `U8_NON_LINEAR`
+  before export, to avoid a 16-bit PNG being read back as `uint16` and coming
+  out white. Your original document is not modified.
+- **The active selection is ignored.** Cutting out applies to the whole layer.
+- **A run cannot be cancelled** once started, other than by the 10-minute
+  timeout. GIMP's window stays frozen during inference.
+- **Heavy data currently lives under `Gimp.directory()`**, which on Windows
+  means `AppData\Roaming`. See the note on corporate machines above.
+- **Flatpak is not supported**, detected through `/.flatpak-info`.
+- **The GPU path is effectively Windows-only**, see the NVIDIA section.
 
 ### Migration from the previous version
 
@@ -273,6 +308,12 @@ Two things are worth doing anyway:
 2. **Old leftovers you can remove**, once the new version works:
    - `<GIMP config>/ia_detourage_python_cache.txt` — the old interpreter cache, no longer read
    - `~/.u2net/` — the old model folder; models now live in `ai_suite_shared/models`
+
+> ⚠️ **Weights in `~/.u2net/` are not migrated automatically.** The plugin does
+> not look there, so the model you had will be downloaded again — up to 170 MB.
+> To avoid that, copy the `.onnx` files into `ai_suite_shared/models` **before**
+> the first run, flat, with no sub-folder. The plugin reads that folder and will
+> not re-download a file it finds there.
 
 If you'd rather the plugin build its own clean environment instead of reusing your system installation, tick **"Reparer l'installation"** on the first run.
 
@@ -286,7 +327,35 @@ Before any release:
 assert not any(ord(c) > 127 for c in open("ia_detourage.py", encoding="utf-8").read())
 ```
 
-The plugin also self-checks: markers, JSON keys and property names are duplicated between the plugin and its embedded worker (which cannot interpolate anything, by design), so a comparison script must confirm both sets match.
+Markers, JSON keys and property names are duplicated between the plugin and its
+embedded worker, which cannot interpolate anything by design. A marker renamed
+on one side only is never recognised again, and the failure shows up as an
+absence of diagnosis rather than as an error. Run this before any release, next
+to the ASCII check:
+
+```python
+import re
+src = open("ia_detourage.py", encoding="utf-8").read()
+start = src.index("CODE_WORKER = r'''")
+end = src.index("'''", start + 20)
+worker, plugin = src[start:end], src[:start] + src[end:]
+
+assert not any(ord(c) > 127 for c in src), "non-ASCII character in the file"
+assert "\r\n" not in open("ia_detourage.py", "rb").read().decode("utf-8"), "CRLF line endings"
+
+markers = lambda t: set(re.findall(r"\[IA_[A-Z_]+\]", t))
+assert markers(worker) == markers(plugin), markers(worker) ^ markers(plugin)
+```
+
+Both sets should contain exactly ten markers. The JSON keys written by
+`run()` and read by the worker (`entree`, `sortie`, `modele`, `fournisseurs`,
+`alpha_matting`, `seuil_avant_plan`, `seuil_arriere_plan`, `erosion`) deserve
+the same treatment.
+
+Two more things the release checklist asks for and that are worth writing before
+the next version: a test that parses a **real captured** `py -0p` output, since a
+detection strategy that never finds anything reports nothing; and a test on a
+machine that already has the model in place, not only on a clean one.
 
 ### License
 
@@ -296,9 +365,9 @@ MIT.
 
 ## 🇫🇷 Français
 
-### Ce qui change en 3.7
+### Ce qui change en 3.11
 
-| | v2.x | v3.7 |
+| | v2.x | v3.11 |
 |---|---|---|
 | Installation Windows | `pip install` à taper dans un terminal | entièrement automatique |
 | Environnement Python | votre Python système | dédié, isolé, mutualisé entre les greffons de la suite |
@@ -414,14 +483,20 @@ mégapixel, du clic sur *Valider* jusqu'à l'apparition du calque.
 
 | Situation | Durée |
 |---|---|
-| Premier lancement, moteur processeur — environnement construit et modèle téléchargé | **~10 secondes** |
+| Premier lancement, moteur processeur — environnement construit et modèle téléchargé | **~10 secondes** ¹ |
 | Premier lancement, moteur GPU — `onnxruntime-gpu` et cuDNN | **~5 minutes** |
 | Tout lancement suivant, `u2netp` ou `u2net`, sur le processeur | **~10 secondes** |
 | Tout lancement suivant, `u2net`, sur la carte graphique | **~10 secondes** |
 
+¹ Mesuré sur une machine dont le cache pip contenait déjà les roues. Sur un
+poste réellement vierge, le téléchargement des 566 Mo de `rembg`, `scipy` et
+`scikit-image` dépend de votre connexion et peut demander plusieurs minutes. La
+barre de progression reste animée du début à la fin : rien n'est bloqué.
+
 Deux choses à savoir avant de choisir.
 
-Le moteur processeur s'installe en quelques secondes, pas en minutes. Les cinq
+Le moteur processeur s'installe en quelques secondes une fois les roues en
+cache, pas en minutes. Les cinq
 minutes ne concernent que la variante GPU, et tiennent presque entièrement au
 téléchargement d'`onnxruntime-gpu` et de cuDNN.
 
@@ -474,6 +549,15 @@ puis `nvidia-cudnn-cu12`) pour vous éviter d'aller le chercher chez NVIDIA.
 Cette tentative est sans conséquence : si aucune variante ne convient,
 l'inférence de validation échoue et vous repassez sur le processeur avec une
 explication.
+
+> ⚠️ **En pratique, la voie GPU est une fonctionnalité Windows.** L'exposition
+> du CUDA Toolkit et des bibliothèques NVIDIA installées par pip passe par le
+> `PATH` du processus, que le greffon ne construit que sous Windows. Sous Linux
+> et macOS, il purge `LD_LIBRARY_PATH` et les `DYLD_*` pour les raisons
+> d'isolation décrites plus haut, sans reconstruire de chemin de bibliothèques :
+> l'inférence de validation échouera normalement et vous serez basculé sur le
+> processeur avec un message. Y cocher la case coûte un téléchargement et
+> n'apporte rien.
 
 **La validation est une vraie inférence, pas un contrôle de capacité.**
 Demander à ONNX Runtime si CUDA est « disponible » renvoie oui même sans
@@ -539,8 +623,10 @@ développement, pas au signalement d'un problème.
 |---|---|---|
 | Le greffon n'apparaît nulle part | Mauvais dossier, nom de dossier différent du nom de fichier, GIMP non redémarré, ou script non exécutable (macOS/Linux) | Revoyez l'étape 2. S'il reste absent, cherchez `ia_detourage_diagnostic.log` dans `%APPDATA%` (Windows) ou votre dossier personnel : le greffon y écrit dès que GIMP le charge. **Aucun fichier journal signifie que GIMP n'a jamais exécuté le fichier**, ce qui désigne l'emplacement d'installation, pas le greffon |
 | « Aucun interpreteur Python du systeme utilisable » | Aucun Python 3.10+ trouvé en dehors de GIMP | Installez Python depuis python.org, ou `sudo apt install python3 python3-venv` |
-| « Impossible de creer l'environnement virtuel » | `python3-venv` manquant | `sudo apt install python3-venv`, puis relancez le filtre |
-| L'installation dépasse 15 minutes | Pas de connexion, ou un proxy d'entreprise bloque `pip` | Vérifiez la connexion, puis relancez le filtre |
+| « Impossible de creer l'environnement virtuel » | `venv` présent mais la création a échoué — droits, disque plein, installation abîmée | Lisez l'extrait de journal du message ; sur Debian et Ubuntu, `sudo apt install python3-venv`, puis relancez le filtre |
+| « Aucun interpreteur Python du systeme utilisable » **sur Debian/Ubuntu alors que Python est installé** | Le greffon écarte un interpréteur incapable de créer un venv : un `python3-venv` absent se manifeste donc ici, et non au moment de la création | `sudo apt install python3-venv`, puis relancez le filtre |
+| Une étape d'installation dépasse son délai | Pas de connexion, ou un proxy d'entreprise bloque `pip` | Vérifiez la connexion, puis relancez le filtre. Chaque étape dispose de son propre budget de 15 minutes, et la variante GPU en enchaîne jusqu'à quatre : un réseau totalement bloqué peut donc occuper la fenêtre bien au-delà de 15 minutes |
+| « Le detourage a depasse le delai de 10 minutes » | Le plus souvent une grande image, mais au premier lancement avec `u2net` ou `isnet` ce peut être simplement le modèle de 170 Mo encore en cours de téléchargement | Relancez une fois : un modèle partiellement récupéré aboutit beaucoup plus vite. Si cela se reproduit sur la même image, essayez `u2netp` et décochez l'affinage |
 | « Une precedente installation a echoue » | Un échec a été mémorisé pour ne pas être retenté sans fin | Cochez **« Reparer l'installation »** |
 | « GIMP fonctionne dans un bac a sable Flatpak » | Version Flatpak | Utilisez un paquet natif, une AppImage ou l'installeur officiel |
 | GPU coché, le calque indique « sur processeur » | Le fournisseur CUDA ne s'est pas enregistré | Le greffon expose déjà le dossier `bin` du Toolkit au moteur. Ce qui manque le plus souvent est **cuDNN 9**, qui doit se trouver à côté du CUDA Toolkit, ou une version de Toolkit différente de celle attendue par `onnxruntime-gpu` |
@@ -548,9 +634,32 @@ développement, pas au signalement d'un problème.
 | Le modèle « de meilleure qualité » donne un moins bon résultat | Normal — voir [Choisir un modèle](#choisir-un-modèle) | Lancez les deux et gardez le meilleur calque |
 | « Espace disque insuffisant pour installer le moteur IA » | Le greffon vérifie avant tout téléchargement | Libérez de la place : 2 Go pour le moteur processeur, 5 Go pour celui du GPU. Le message indique le requis, le disponible et le volume concerné |
 | « L'option carte graphique a été demandée mais n'a pas pu être utilisée : cuDNN est introuvable » | Le CUDA Toolkit est installé mais pas cuDNN, et la tentative du greffon via PyPI n'a pas abouti | Votre calque a quand même été produit, sur le processeur. Décochez la case, ou installez cuDNN 9 depuis nvidia.com dans la série correspondant à votre CUDA |
-| GPU coché, le calque indique « sur processeur », sans avertissement | L'avertissement n'est affiché qu'une fois par environnement, puis mémorisé | Le nom du calque reste la trace permanente |
+| GPU coché, le calque indique « sur processeur », sans avertissement | Vaut pour l'avertissement d'*écart* : un environnement correctement installé qui a néanmoins calculé sur le processeur. Celui-là n'est affiché qu'une fois par environnement, puis mémorisé | Le nom du calque reste la trace permanente. L'autre avertissement — la voie GPU n'a pas pu être construite du tout — est affiché à **chaque** exécution, puisque vous redemandez la carte à chaque fois |
 
 Pour conserver le dossier de travail et ses journaux après un traitement, définissez la variable d'environnement `IA_DETOURAGE_DEBUG=1` avant de démarrer GIMP. Le chemin du dossier apparaît alors dans les messages d'erreur.
+
+### Ce que ce greffon ne garantit pas
+
+Énoncé franchement, parce qu'un README qui n'énumère que des qualités n'est pas
+un document sur lequel on peut s'appuyer.
+
+- **Aucun contrôle d'intégrité des modèles.** Les poids sont téléchargés par
+  `rembg` dans `models/` au premier usage. Ni empreinte figée ni confiance à la
+  première utilisation ne sont implémentées dans cette version. Le seuil d'un
+  gigaoctet borne le volume téléchargé sans vous demander votre avis, pas la
+  confiance à accorder au fichier.
+- **Le calque produit est en 8 bits.** L'image source est convertie en
+  `U8_NON_LINEAR` avant export, pour éviter qu'un PNG 16 bits relu en `uint16`
+  ne ressorte blanc. Votre document d'origine n'est pas modifié.
+- **La sélection active est ignorée.** Le détourage porte sur tout le calque.
+- **Le traitement n'est pas annulable** une fois lancé, sinon par le délai de
+  10 minutes. La fenêtre de GIMP reste figée pendant l'inférence.
+- **Les données volumineuses résident aujourd'hui sous `Gimp.directory()`**,
+  c'est-à-dire `AppData\Roaming` sous Windows. Voir la remarque sur les postes
+  d'entreprise ci-dessus.
+- **Flatpak n'est pas pris en charge**, détecté via `/.flatpak-info`.
+- **La voie GPU ne fonctionne en pratique que sous Windows**, voir la section
+  Accélération NVIDIA.
 
 ### Migration depuis la version précédente
 
@@ -562,6 +671,13 @@ Deux gestes restent utiles :
 2. **Résidus supprimables**, une fois la nouvelle version fonctionnelle :
    - `<config GIMP>/ia_detourage_python_cache.txt` — l'ancien cache d'interpréteur, plus jamais lu
    - `~/.u2net/` — l'ancien dossier de modèles ; ils vivent désormais dans `ai_suite_shared/models`
+
+> ⚠️ **Les poids présents dans `~/.u2net/` ne sont pas migrés automatiquement.**
+> Le greffon ne regarde pas à cet endroit : le modèle que vous aviez sera
+> retéléchargé, jusqu'à 170 Mo. Pour l'éviter, copiez les fichiers `.onnx` dans
+> `ai_suite_shared/models` **avant** le premier lancement, à plat, sans créer de
+> sous-dossier. Le greffon lit ce dossier et ne retélécharge jamais un fichier
+> qu'il y trouve.
 
 Si vous préférez que le greffon construise son propre environnement propre plutôt que de réutiliser votre installation système, cochez **« Reparer l'installation »** au premier lancement.
 
@@ -575,7 +691,36 @@ Avant toute publication :
 assert not any(ord(c) > 127 for c in open("ia_detourage.py", encoding="utf-8").read())
 ```
 
-Le greffon impose aussi ses propres contrôles : les marqueurs, les clés JSON et les noms de propriétés sont dupliqués entre le greffon et son worker embarqué — lequel ne peut rien interpoler, par conception — donc un script de comparaison doit confirmer que les deux ensembles coïncident.
+Les marqueurs, les clés JSON et les noms de propriétés sont dupliqués entre le
+greffon et son worker embarqué, lequel ne peut rien interpoler par conception.
+Un marqueur renommé d'un seul côté n'est plus jamais reconnu, et la panne se
+présente comme une absence de diagnostic plutôt que comme une erreur. À exécuter
+avant toute publication, à côté du contrôle ASCII :
+
+```python
+import re
+src = open("ia_detourage.py", encoding="utf-8").read()
+debut = src.index("CODE_WORKER = r'''")
+fin = src.index("'''", debut + 20)
+worker, greffon = src[debut:fin], src[:debut] + src[fin:]
+
+assert not any(ord(c) > 127 for c in src), "caractere non ASCII dans le fichier"
+assert "\r\n" not in open("ia_detourage.py", "rb").read().decode("utf-8"), "fins de ligne CRLF"
+
+marqueurs = lambda t: set(re.findall(r"\[IA_[A-Z_]+\]", t))
+assert marqueurs(worker) == marqueurs(greffon), marqueurs(worker) ^ marqueurs(greffon)
+```
+
+Les deux ensembles doivent contenir exactement dix marqueurs. Les clés JSON
+écrites par `run()` et relues par le worker (`entree`, `sortie`, `modele`,
+`fournisseurs`, `alpha_matting`, `seuil_avant_plan`, `seuil_arriere_plan`,
+`erosion`) méritent le même traitement.
+
+Deux autres contrôles que la liste de livraison réclame et qui restent à écrire
+avant la prochaine version : un test analysant une sortie **réellement
+capturée** de `py -0p`, puisqu'une stratégie de détection qui ne trouve jamais
+rien ne se signale pas ; et un test sur un poste où le modèle est déjà en place,
+et pas seulement sur une installation vierge.
 
 ### Licence
 
