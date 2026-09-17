@@ -40,6 +40,10 @@ from gi.repository import Gio
 VERSION_GREFFON = "3.11.0"
 NOM_PROCEDURE = "python-fu-ia-detourage"
 NOM_DOSSIER_PARTAGE = "ai_suite_shared"
+# Identifiant du greffon dans les ressources partagees de la suite. Il ne
+# derive pas de NOM_PROCEDURE : celui-ci porte un prefixe "python-fu-" qui n'a
+# rien a faire dans un fichier de donnees.
+NOM_GREFFON = "ia_detourage"
 
 # Section 10 : au-dela de ce seuil, aucun telechargement automatique. Le
 # greffon affiche alors le chemin exact ou deposer le fichier. En deca, le
@@ -501,6 +505,13 @@ def dossier_journaux():
 
 
 INCIDENTS_CONSERVES = 10
+# Fichier depose dans chaque archive pour dire quel greffon l'a produite. Le
+# dossier logs/ est partage par toute la suite : sans ce marqueur, un greffon
+# ne sait pas distinguer ses archives de celles des autres.
+NOM_FICHIER_INCIDENT = "incident.json"
+# Age au-dela duquel une archive que personne ne revendique peut etre
+# supprimee. Elles viennent des versions anterieures a ce marqueur.
+JOURS_ARCHIVES_ORPHELINES = 30
 
 
 def archiver_journaux(dossier_execution):
@@ -516,10 +527,17 @@ def archiver_journaux(dossier_execution):
     if not fichiers:
         return None
 
-    cible = os.path.join(dossier_journaux(),
-                         time.strftime("%Y-%m-%d_%H-%M-%S"))
+    # Deux incidents dans la meme seconde ne doivent pas s'ecraser : le second
+    # archivage reutiliserait le meme dossier et remplacerait les journaux du
+    # premier, alors que c'est justement dans une serie d'echecs rapproches
+    # qu'ils comptent. Les microsecondes rendent le nom unique ; la purge, elle,
+    # ne se fie plus au nom.
+    horodatage = "%s-%06d" % (time.strftime("%Y-%m-%d_%H-%M-%S"),
+                              time.time_ns() // 1000 % 1000000)
+    cible = os.path.join(dossier_journaux(), horodatage)
     try:
         os.makedirs(cible, exist_ok=True)
+        _ecrire_marque_incident(cible, horodatage)
         for nom in fichiers:
             shutil.copy2(os.path.join(dossier_execution, nom),
                          os.path.join(cible, nom))
@@ -530,17 +548,97 @@ def archiver_journaux(dossier_execution):
     return cible
 
 
-def _purger_journaux():
-    """Les incidents s'accumuleraient indefiniment : on ne garde que les plus
-    recents."""
+def _ecrire_marque_incident(cible, horodatage, contexte=None):
+    """Depose dans l'archive le fichier qui dit quel greffon l'a produite.
+
+    Il est ecrit avant la copie des journaux : si celle-ci echoue a mi-chemin,
+    l'archive reste identifiable, donc purgeable par son proprietaire.
+    """
     try:
-        base = dossier_journaux()
-        incidents = sorted(n for n in os.listdir(base)
-                           if os.path.isdir(os.path.join(base, n)))
-        for nom in incidents[:-INCIDENTS_CONSERVES]:
-            shutil.rmtree(os.path.join(base, nom), ignore_errors=True)
-    except OSError:
+        with open(os.path.join(cible, NOM_FICHIER_INCIDENT), "w",
+                  encoding="utf-8") as flux:
+            json.dump({"greffon": NOM_GREFFON, "version": VERSION_GREFFON,
+                       "plateforme": sys.platform, "horodatage": horodatage,
+                       "contexte": contexte or {}}, flux, indent=2)
+    except Exception:
         pass
+
+
+def _lire_marque_incident(chemin):
+    """(greffon, date du marqueur) ou (None, 0.0) si l'archive n'en a pas."""
+    marque = os.path.join(chemin, NOM_FICHIER_INCIDENT)
+    if not os.path.isfile(marque):
+        return None, 0.0
+    try:
+        with open(marque, "r", encoding="utf-8", errors="replace") as flux:
+            donnees = json.load(flux)
+    except Exception:
+        return None, 0.0
+    if not isinstance(donnees, dict):
+        return None, 0.0
+    try:
+        date = os.path.getmtime(marque)
+    except OSError:
+        date = 0.0
+    return donnees.get("greffon"), date
+
+
+def _purger_journaux(base=None):
+    """Purge les archives de CE greffon, et rien d'autre.
+
+    Le dossier logs/ est partage par toute la suite, et deux conventions de
+    nommage y cohabitent : "2026-09-16_19-44-05" ici, "20260916-194405-000123"
+    chez d'autres greffons. En ASCII le tiret (0x2D) precede le chiffre
+    (0x30) : un tri alphabetique place donc systematiquement la premiere forme
+    en tete, et la purge qui s'y fiait supprimait toujours les archives des
+    greffons qui l'emploient - dont celles de ce greffon-ci - quel que soit
+    leur age. Dix incidents d'un voisin suffisaient a effacer tout
+    l'historique, sans le moindre message, puisqu'il n'y a pas d'incident
+    quand un greffon fonctionne.
+
+    On ne purge donc que ce qu'on a produit, reconnaissable a son
+    incident.json, et l'on date par ce fichier plutot que par le nom du
+    dossier : aucune convention de nommage n'entre plus en jeu.
+
+    Les archives que personne ne revendique - celles d'avant ce marqueur - ne
+    sont supprimees qu'a deux conditions reunies : etre plus vieilles que
+    JOURS_ARCHIVES_ORPHELINES, et ne pas figurer parmi les
+    INCIDENTS_CONSERVES plus recentes. Un greffon de la suite qui n'aurait pas
+    encore recu ce correctif garde ainsi ses archives recentes, et le stock
+    ancien se resorbe quand meme.
+
+    Retourne la liste des chemins supprimes, pour que le comportement soit
+    verifiable autrement que par une inspection du dossier.
+    """
+    base = base or dossier_journaux()
+    miennes = []
+    orphelines = []
+    try:
+        entrees = os.listdir(base)
+    except OSError:
+        return []
+    for nom in entrees:
+        chemin = os.path.join(base, nom)
+        if not os.path.isdir(chemin):
+            continue
+        greffon, date = _lire_marque_incident(chemin)
+        if greffon == NOM_GREFFON:
+            miennes.append((date, nom, chemin))
+        elif greffon is None:
+            try:
+                date = os.path.getmtime(chemin)
+            except OSError:
+                date = 0.0
+            orphelines.append((date, nom, chemin))
+    miennes.sort()
+    orphelines.sort()
+    limite = time.time() - JOURS_ARCHIVES_ORPHELINES * 86400
+    condamnees = [chemin for _, _, chemin in miennes[:-INCIDENTS_CONSERVES]]
+    condamnees += [chemin for date, _, chemin
+                   in orphelines[:-INCIDENTS_CONSERVES] if date < limite]
+    for chemin in condamnees:
+        shutil.rmtree(chemin, ignore_errors=True)
+    return condamnees
 
 
 def dossier_modeles():
