@@ -89,6 +89,28 @@ The first time you run the filter, the plugin builds its environment: it looks f
 
 If anything fails, you get a specific message — not a generic error — and nothing is left half-installed that a second run can't fix.
 
+### 🐧 Linux Installation Guide & Common Pitfalls
+
+Installing plugins on Linux (Debian, Ubuntu, Mint, etc.) requires strict attention to file permissions and folder naming. GIMP 3 is much stricter on Linux than on Windows.
+
+#### 1. Download Warning (Syntax Error / DOCTYPE)
+Do not right-click and "Save As" directly on the GitHub code page, or you will download an HTML web page instead of the Python script!
+* **The correct method:** Click the **"Raw"** button (or the download icon) at the top right of the code block, then save the plain text page.
+* **Via terminal (wget):** You must use the direct raw file URL:
+  `wget https://raw.githubusercontent.com/YOUR_NAME/YOUR_REPO/main/ia_detourage.py`
+
+#### 2. Strict Folder Naming and Paths
+The folder hosting the plugin on your computer must have **the exact same name** as the script file, without the `.py` extension. Watch out for hyphens vs. underscores!
+* ❌ Incorrect: `.../plug-ins/ia-detourage/ia_detourage.py` (hyphen)
+* ✅ Correct: `.../plug-ins/ia_detourage/ia_detourage.py` (underscore)
+
+**Note on your folder path:** The exact path depends on your GIMP version (e.g., 3.0 or 3.2) and your installation type (Native, Flatpak, or Snap). To find your exact path, open GIMP and go to **Edit ▸ Preferences ▸ Folders ▸ Plug-ins**.
+
+#### 3. Mandatory Execution Rights
+By default, Linux prevents newly downloaded scripts from running. GIMP will completely ignore the plugin if you skip this step. Open a terminal and run the `chmod +x` command on your specific path:
+```bash
+chmod +x ~/.config/GIMP/3.0/plug-ins/ia_detourage/ia_detourage.py
+
 ### Using it
 
 1. Select the layer to process. **Only that layer is used**, not the flattened composite.
@@ -441,6 +463,26 @@ S'il manque, le greffon vous affiche cette commande exacte plutôt qu'une erreur
 Au premier usage du filtre, le greffon construit son environnement : il cherche un Python utilisable, crée un environnement virtuel dédié, y installe `rembg` et ses dépendances, puis télécharge le modèle choisi. Comptez **une dizaine de secondes** pour le moteur processeur, ou **environ cinq minutes** si vous avez coché l'option GPU, barre de progression animée du début à la fin. Tous les lancements suivants démarrent immédiatement.
 
 En cas d'échec, vous obtenez un message précis — pas une erreur générique — et rien ne reste à moitié installé qu'un second lancement ne sache réparer.
+
+### 🐧 Guide d'installation et pièges fréquents sous Linux
+
+L'installation sous Linux (Debian, Ubuntu, Mint, etc.) nécessite une attention particulière concernant les droits d'accès et la nomenclature. GIMP 3 est beaucoup plus strict que sur Windows.
+
+#### 1. Attention au téléchargement (Erreur de syntaxe / DOCTYPE)
+Ne faites pas de clic droit "Enregistrer sous" directement sur la page GitHub, vous téléchargeriez une page web HTML au lieu du script !
+* **La bonne méthode :** Cliquez sur le bouton **"Raw"** (ou l'icône de téléchargement) en haut à droite du code, puis enregistrez la page blanche contenant uniquement le texte du code.
+* **Via le terminal (wget) :** Utilisez obligatoirement l'URL directe du fichier brut :
+  `wget https://raw.githubusercontent.com/VOTRE_NOM/VOTRE_DEPOT/main/ia_detourage.py`
+
+#### 2. La nomenclature stricte du dossier
+Le dossier qui accueille le greffon dans vos fichiers locaux doit porter **exactement le même nom** que le fichier script, sans l'extension `.py`. Attention aux tirets !
+* ❌ Incorrect : `~/.config/GIMP/3.0/plug-ins/ia-detourage/ia_detourage.py` (tiret du milieu)
+* ✅ Correct : `~/.config/GIMP/3.0/plug-ins/ia_detourage/ia_detourage.py` (tiret du bas)
+
+#### 3. Les droits d'exécution obligatoires
+Par défaut, Linux empêche l'exécution d'un fichier fraîchement téléchargé. GIMP ignorera le greffon si vous sautez cette étape. Ouvrez un terminal et tapez :
+```bash
+chmod +x ~/.config/GIMP/3.0/plug-ins/ia_detourage/ia_detourage.py
 
 ### Utilisation
 
