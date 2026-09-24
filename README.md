@@ -111,6 +111,12 @@ By default, Linux prevents newly downloaded scripts from running. GIMP will comp
 ```bash
 chmod +x ~/.config/GIMP/3.0/plug-ins/ia_detourage/ia_detourage.py
 
+#### 4. System Dependencies (Graphical Interface)
+Ensure that your Linux distribution has the system library required to generate the GIMP user interface.
+
+On Debian / Ubuntu / Mint, type the following in the terminal:
+sudo apt install python3-gi
+
 ### Using it
 
 1. Select the layer to process. **Only that layer is used**, not the flattened composite.
@@ -483,6 +489,12 @@ Le dossier qui accueille le greffon dans vos fichiers locaux doit porter **exact
 Par défaut, Linux empêche l'exécution d'un fichier fraîchement téléchargé. GIMP ignorera le greffon si vous sautez cette étape. Ouvrez un terminal et tapez :
 ```bash
 chmod +x ~/.config/GIMP/3.0/plug-ins/ia_detourage/ia_detourage.py
+
+#### 4. Dépendances système (Interface graphique)
+Assurez-vous que votre distribution Linux possède bien la bibliothèque système permettant de générer l'interface utilisateur de GIMP.
+
+Sous Debian / Ubuntu / Mint, tapez dans le terminal :
+sudo apt install python3-gi
 
 ### Utilisation
 
