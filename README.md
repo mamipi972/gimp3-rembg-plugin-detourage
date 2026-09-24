@@ -94,28 +94,42 @@ If anything fails, you get a specific message — not a generic error — and no
 Installing plugins on Linux (Debian, Ubuntu, Mint, etc.) requires strict attention to file permissions and folder naming. GIMP 3 is much stricter on Linux than on Windows.
 
 #### 1. Download Warning (Syntax Error / DOCTYPE)
+
 Do not right-click and "Save As" directly on the GitHub code page, or you will download an HTML web page instead of the Python script!
-* **The correct method:** Click the **"Raw"** button (or the download icon) at the top right of the code block, then save the plain text page.
-* **Via terminal (wget):** You must use the direct raw file URL:
-  `wget https://raw.githubusercontent.com/YOUR_NAME/YOUR_REPO/main/ia_detourage.py`
+
+- **The correct method:** Click the **"Raw"** button (or the download icon) at the top right of the code block, then save the plain text page.
+- **Via terminal (wget):** You must use the direct raw file URL:
+
+  ```bash
+  wget https://raw.githubusercontent.com/YOUR_NAME/YOUR_REPO/main/ia_detourage.py
+  ```
 
 #### 2. Strict Folder Naming and Paths
+
 The folder hosting the plugin on your computer must have **the exact same name** as the script file, without the `.py` extension. Watch out for hyphens vs. underscores!
-* ❌ Incorrect: `.../plug-ins/ia-detourage/ia_detourage.py` (hyphen)
-* ✅ Correct: `.../plug-ins/ia_detourage/ia_detourage.py` (underscore)
+
+- ❌ Incorrect: `.../plug-ins/ia-detourage/ia_detourage.py` (hyphen)
+- ✅ Correct: `.../plug-ins/ia_detourage/ia_detourage.py` (underscore)
 
 **Note on your folder path:** The exact path depends on your GIMP version (e.g., 3.0 or 3.2) and your installation type (Native, Flatpak, or Snap). To find your exact path, open GIMP and go to **Edit ▸ Preferences ▸ Folders ▸ Plug-ins**.
 
 #### 3. Mandatory Execution Rights
+
 By default, Linux prevents newly downloaded scripts from running. GIMP will completely ignore the plugin if you skip this step. Open a terminal and run the `chmod +x` command on your specific path:
+
 ```bash
 chmod +x ~/.config/GIMP/3.0/plug-ins/ia_detourage/ia_detourage.py
+```
 
 #### 4. System Dependencies (Graphical Interface)
+
 Ensure that your Linux distribution has the system library required to generate the GIMP user interface.
 
 On Debian / Ubuntu / Mint, type the following in the terminal:
+
+```bash
 sudo apt install python3-gi
+```
 
 ### Using it
 
@@ -475,26 +489,40 @@ En cas d'échec, vous obtenez un message précis — pas une erreur générique 
 L'installation sous Linux (Debian, Ubuntu, Mint, etc.) nécessite une attention particulière concernant les droits d'accès et la nomenclature. GIMP 3 est beaucoup plus strict que sur Windows.
 
 #### 1. Attention au téléchargement (Erreur de syntaxe / DOCTYPE)
+
 Ne faites pas de clic droit "Enregistrer sous" directement sur la page GitHub, vous téléchargeriez une page web HTML au lieu du script !
-* **La bonne méthode :** Cliquez sur le bouton **"Raw"** (ou l'icône de téléchargement) en haut à droite du code, puis enregistrez la page blanche contenant uniquement le texte du code.
-* **Via le terminal (wget) :** Utilisez obligatoirement l'URL directe du fichier brut :
-  `wget https://raw.githubusercontent.com/VOTRE_NOM/VOTRE_DEPOT/main/ia_detourage.py`
+
+- **La bonne méthode :** Cliquez sur le bouton **"Raw"** (ou l'icône de téléchargement) en haut à droite du code, puis enregistrez la page blanche contenant uniquement le texte du code.
+- **Via le terminal (wget) :** Utilisez obligatoirement l'URL directe du fichier brut :
+
+  ```bash
+  wget https://raw.githubusercontent.com/VOTRE_NOM/VOTRE_DEPOT/main/ia_detourage.py
+  ```
 
 #### 2. La nomenclature stricte du dossier
+
 Le dossier qui accueille le greffon dans vos fichiers locaux doit porter **exactement le même nom** que le fichier script, sans l'extension `.py`. Attention aux tirets !
-* ❌ Incorrect : `~/.config/GIMP/3.0/plug-ins/ia-detourage/ia_detourage.py` (tiret du milieu)
-* ✅ Correct : `~/.config/GIMP/3.0/plug-ins/ia_detourage/ia_detourage.py` (tiret du bas)
+
+- ❌ Incorrect : `~/.config/GIMP/3.0/plug-ins/ia-detourage/ia_detourage.py` (tiret du milieu)
+- ✅ Correct : `~/.config/GIMP/3.0/plug-ins/ia_detourage/ia_detourage.py` (tiret du bas)
 
 #### 3. Les droits d'exécution obligatoires
+
 Par défaut, Linux empêche l'exécution d'un fichier fraîchement téléchargé. GIMP ignorera le greffon si vous sautez cette étape. Ouvrez un terminal et tapez :
+
 ```bash
 chmod +x ~/.config/GIMP/3.0/plug-ins/ia_detourage/ia_detourage.py
+```
 
 #### 4. Dépendances système (Interface graphique)
+
 Assurez-vous que votre distribution Linux possède bien la bibliothèque système permettant de générer l'interface utilisateur de GIMP.
 
 Sous Debian / Ubuntu / Mint, tapez dans le terminal :
+
+```bash
 sudo apt install python3-gi
+```
 
 ### Utilisation
 
