@@ -4,6 +4,9 @@
 
 The AI model runs in a **separate subprocess**, never inside GIMP's memory — your editor cannot be brought down by it. The plugin finds or builds its own Python environment on every platform, **including Windows**, without ever asking you to type a command.
 
+The interface follows GIMP's language: **French** when GIMP is in French, **English** otherwise.
+L'interface suit la langue de GIMP : **français** si GIMP est en français, **anglais** sinon.
+
 🇬🇧 [English](#-english) · 🇫🇷 [Français](#-français)
 
 > **Upgrading from v2.x?** Read [Migration](#migration-from-the-previous-version) / [Migration](#migration-depuis-la-version-précédente) first. The old version required `pip install` in a terminal. This one does not.
@@ -11,6 +14,10 @@ The AI model runs in a **separate subprocess**, never inside GIMP's memory — y
 ---
 
 ## 🇬🇧 English
+
+### What's new in 3.12
+
+- **Bilingual interface.** Menu, dialog, progress messages, errors and layer names are in French when GIMP is in French, and in English in every other language. Nothing to configure: see [Interface language](#interface-language).
 
 ### What's new in 3.11
 
@@ -81,7 +88,8 @@ If it's missing, the plugin shows you that exact command rather than a cryptic e
 5. Restart GIMP.
 
 **There is no step 3.** No `pip`, no terminal, no path to configure. The plugin appears under
-**Layer ▸ Transparency ▸ Detourer le calque (IA)...**
+**Layer ▸ Transparency ▸ Remove Background (AI)...**
+(or **Calque ▸ Transparence ▸ Detourer le calque (IA)...** if GIMP is in French).
 
 #### Step 3 — First run
 
@@ -101,7 +109,7 @@ Do not right-click and "Save As" directly on the GitHub code page, or you will d
 - **Via terminal (wget):** You must use the direct raw file URL:
 
   ```bash
-  wget https://raw.githubusercontent.com/YOUR_NAME/YOUR_REPO/main/ia_detourage.py
+  wget https://raw.githubusercontent.com/mamipi972/gimp3-rembg-plugin-detourage/main/ia_detourage.py
   ```
 
 #### 2. Strict Folder Naming and Paths
@@ -134,8 +142,8 @@ sudo apt install python3-gi
 ### Using it
 
 1. Select the layer to process. **Only that layer is used**, not the flattened composite.
-2. **Layer ▸ Transparency ▸ Detourer le calque (IA)...**
-3. Pick a model, click **Valider**.
+2. **Layer ▸ Transparency ▸ Remove Background (AI)...**
+3. Pick a model, click **OK**.
 4. A new layer is inserted above the original, at the same position and offset, inside the same group. **Your original layer is never modified.**
 
 #### The dialog at a glance
@@ -167,7 +175,7 @@ two settings means running twice and keeping the better layer.
 #### How long it takes
 
 Measured on a Ryzen 5 5500 / 16 GB / RTX 3050, on roughly 1 megapixel images,
-from clicking *Valider* to the layer appearing.
+from clicking *OK* to the layer appearing.
 
 | Situation | Time |
 |---|---|
@@ -248,8 +256,8 @@ only surfaces at the first convolution, in the middle of your actual work. So
 the plugin runs the model on a small test image before trusting the
 environment.
 
-**The layer name always states what really happened**: `u2net sur GPU NVIDIA`
-or `u2net sur processeur`. It is derived from the execution provider the session
+**The layer name always states what really happened**: `u2net on NVIDIA GPU`
+or `u2net on CPU` (`u2net sur GPU NVIDIA` / `u2net sur processeur` in French). It is derived from the execution provider the session
 actually used, never from the presence of a card.
 
 Is it worth it? With `u2netp` on a modern processor, inference takes a second or
@@ -258,7 +266,13 @@ With `u2net` or `isnet` on large images, the difference becomes real.
 
 #### Repair the installation
 
-If the filter stops working — a package removed, an interrupted install, a Python upgrade — tick **"Reparer l'installation"** and run it once. The environment is rebuilt from scratch. You never need to delete a folder by hand.
+If the filter stops working — a package removed, an interrupted install, a Python upgrade — tick **"Repair the installation"** and run it once. The environment is rebuilt from scratch. You never need to delete a folder by hand.
+
+### Interface language
+
+The plugin reads the language GIMP passes to its plug-ins (**Edit ▸ Preferences ▸ Interface ▸ Language**, or the system language when GIMP uses it). French gives a French interface; any other language gives English. It takes effect after restarting GIMP.
+
+To force a language regardless of GIMP, set the environment variable `IA_DETOURAGE_LANG=fr` or `IA_DETOURAGE_LANG=en` before starting GIMP.
 
 ### Where things are stored
 
@@ -304,19 +318,20 @@ development, not for reporting a problem.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | The plugin doesn't appear in the menu at all | Wrong folder, folder name not matching the file name, GIMP not restarted, or the file isn't executable (macOS/Linux) | Re-check step 2. If it still doesn't appear, look for `ia_detourage_diagnostic.log` in `%APPDATA%` (Windows) or your home folder — the plugin writes there as soon as GIMP loads it. **No log file at all means GIMP never ran the file**, which points at the install location, not the plugin |
-| "Aucun interpreteur Python du systeme utilisable" | No Python 3.10+ found outside GIMP | Install Python from python.org, or `sudo apt install python3 python3-venv` |
-| "Impossible de creer l'environnement virtuel" | `venv` present but creation failed — permissions, full disk, broken install | Read the log excerpt in the message; on Debian/Ubuntu `sudo apt install python3-venv`, then run the filter again |
-| "Aucun interpreteur Python du systeme utilisable" **on Debian/Ubuntu with Python installed** | The plugin rejects an interpreter that cannot create a venv, so a missing `python3-venv` surfaces here rather than at creation time | `sudo apt install python3-venv`, then run the filter again |
+| "No usable system Python interpreter was found" | No Python 3.10+ found outside GIMP | Install Python from python.org, or `sudo apt install python3 python3-venv` |
+| "Could not create the virtual environment" | `venv` present but creation failed — permissions, full disk, broken install | Read the log excerpt in the message; on Debian/Ubuntu `sudo apt install python3-venv`, then run the filter again |
+| "No usable system Python interpreter was found" **on Debian/Ubuntu with Python installed** | The plugin rejects an interpreter that cannot create a venv, so a missing `python3-venv` surfaces here rather than at creation time | `sudo apt install python3-venv`, then run the filter again |
 | An install step times out | No connection, or a corporate proxy blocking `pip` | Check the connection, then run the filter again. Each install step has its own 15-minute budget, and the GPU variant runs up to four of them, so a fully blocked network can keep the dialog busy well beyond 15 minutes |
-| "Le detourage a depasse le delai de 10 minutes" | Usually a large image, but on a first run with `u2net` or `isnet` it can simply be the 170 MB model still downloading | Run it once more: a partially cached model resumes far quicker. If it recurs on the same image, try `u2netp` and untick Refine edges |
-| "Une precedente installation a echoue" | A failure was recorded so it isn't retried endlessly | Tick **"Reparer l'installation"** |
-| "GIMP fonctionne dans un bac a sable Flatpak" | Flatpak build | Use a native package, an AppImage, or the official installer |
-| GPU ticked, layer says "sur processeur" | The CUDA provider didn't register | The plugin already adds the Toolkit's `bin` folder to the engine's search path. What's usually missing is **cuDNN 9**, which must sit alongside the CUDA Toolkit, or a Toolkit version that doesn't match the one `onnxruntime-gpu` expects |
+| "Background removal took longer than 10 minutes" | Usually a large image, but on a first run with `u2net` or `isnet` it can simply be the 170 MB model still downloading | Run it once more: a partially cached model resumes far quicker. If it recurs on the same image, try `u2netp` and untick Refine edges |
+| "A previous installation of the AI environment failed" | A failure was recorded so it isn't retried endlessly | Tick **"Repair the installation"** |
+| "GIMP is running inside a Flatpak sandbox" | Flatpak build | Use a native package, an AppImage, or the official installer |
+| GPU ticked, layer says "on CPU" | The CUDA provider didn't register | The plugin already adds the Toolkit's `bin` folder to the engine's search path. What's usually missing is **cuDNN 9**, which must sit alongside the CUDA Toolkit, or a Toolkit version that doesn't match the one `onnxruntime-gpu` expects |
 | GPU option refused before downloading | No CUDA Toolkit found | Install the CUDA Toolkit and cuDNN from NVIDIA, or untick the option and use the processor |
+| Menu or dialog still in the old language after changing GIMP's language | GIMP caches plug-in registrations | Restart GIMP. If it persists, delete the `pluginrc` file in your GIMP profile folder: GIMP re-registers every plug-in on the next start |
 | Results look worse with the "better" model | Normal — see [Choosing a model](#choosing-a-model) | Run both and keep the better layer |
 | "Not enough disk space to install the AI engine" | The plugin checks before downloading anything | Free up space: 2 GB for the CPU engine, 5 GB for the GPU one. The message states what's required, what's available and on which volume |
-| "The GPU option was requested but could not be used: cuDNN is missing" | The CUDA Toolkit is installed but cuDNN is not, and the plugin's PyPI attempt didn't succeed | Your layer was still produced, on the processor. Either untick the box, or install cuDNN 9 from nvidia.com matching your CUDA series |
-| GPU ticked, layer says "sur processeur", no warning shown | This applies to the *mismatch* warning of an environment that installed correctly but computed on the CPU: it is shown once per environment, then remembered | The layer name remains the permanent record. The other warning — the GPU path could not be built at all — is shown on **every** run, since you are re-requesting the card each time |
+| "The graphics card option was requested but could not be used: cuDNN cannot be found" | The CUDA Toolkit is installed but cuDNN is not, and the plugin's PyPI attempt didn't succeed | Your layer was still produced, on the processor. Either untick the box, or install cuDNN 9 from nvidia.com matching your CUDA series |
+| GPU ticked, layer says "on CPU", no warning shown | This applies to the *mismatch* warning of an environment that installed correctly but computed on the CPU: it is shown once per environment, then remembered | The layer name remains the permanent record. The other warning — the GPU path could not be built at all — is shown on **every** run, since you are re-requesting the card each time |
 
 To keep the working folder and its logs after a run, set the environment variable `IA_DETOURAGE_DEBUG=1` before starting GIMP. The folder path is then shown in error messages.
 
@@ -357,11 +372,13 @@ Two things are worth doing anyway:
 > the first run, flat, with no sub-folder. The plugin reads that folder and will
 > not re-download a file it finds there.
 
-If you'd rather the plugin build its own clean environment instead of reusing your system installation, tick **"Reparer l'installation"** on the first run.
+If you'd rather the plugin build its own clean environment instead of reusing your system installation, tick **"Repair the installation"** on the first run.
 
 ### For contributors
 
 **The `.py` file must stay pure ASCII, comments included.** A version differing only by accented characters inside strings and comments was not executed by GIMP at all under Windows: the plugin vanished from the menus and from the procedure browser, with no message and no log entry. The correlation is established by bisection; the mechanism is not. French UI labels are therefore written without accents. This constraint applies to the code only — documentation stays in proper French.
+
+**Every user-facing string goes through `_t(french, english)`.** The language is detected once at start-up (`LANGUE`). Log files, JSON markers and worker output stay untranslated: they are for diagnosis, not for display.
 
 Before any release:
 
@@ -406,6 +423,10 @@ MIT.
 ---
 
 ## 🇫🇷 Français
+
+### Ce qui change en 3.12
+
+- **Interface bilingue.** Menu, fenêtre, messages de progression, erreurs et noms de calques sont en français quand GIMP est en français, et en anglais dans toutes les autres langues. Rien à régler : voir [Langue de l'interface](#langue-de-linterface).
 
 ### Ce qui change en 3.11
 
@@ -477,6 +498,7 @@ S'il manque, le greffon vous affiche cette commande exacte plutôt qu'une erreur
 
 **Il n'y a pas d'étape 3.** Ni `pip`, ni terminal, ni chemin à configurer. Le greffon apparaît dans
 **Calque ▸ Transparence ▸ Detourer le calque (IA)...**
+(ou **Layer ▸ Transparency ▸ Remove Background (AI)...** si GIMP est dans une autre langue).
 
 #### Étape 3 — Premier lancement
 
@@ -496,7 +518,7 @@ Ne faites pas de clic droit "Enregistrer sous" directement sur la page GitHub, v
 - **Via le terminal (wget) :** Utilisez obligatoirement l'URL directe du fichier brut :
 
   ```bash
-  wget https://raw.githubusercontent.com/VOTRE_NOM/VOTRE_DEPOT/main/ia_detourage.py
+  wget https://raw.githubusercontent.com/mamipi972/gimp3-rembg-plugin-detourage/main/ia_detourage.py
   ```
 
 #### 2. La nomenclature stricte du dossier
@@ -660,6 +682,12 @@ sur de grandes images, la différence devient réelle.
 
 Si le filtre cesse de fonctionner — paquet supprimé, installation interrompue, Python mis à jour — cochez **« Reparer l'installation »** et lancez-le une fois. L'environnement est reconstruit intégralement. Vous n'avez jamais à supprimer un dossier à la main.
 
+### Langue de l'interface
+
+Le greffon lit la langue que GIMP transmet à ses greffons (**Édition ▸ Préférences ▸ Interface ▸ Langue**, ou la langue du système si GIMP la suit). En français, l'interface est en français ; dans toute autre langue, elle est en anglais. Le changement prend effet au redémarrage de GIMP.
+
+Pour imposer une langue indépendamment de GIMP, définissez la variable d'environnement `IA_DETOURAGE_LANG=fr` ou `IA_DETOURAGE_LANG=en` avant de lancer GIMP.
+
 ### Où sont stockées les données
 
 Tout se trouve dans un dossier partagé par les greffons de cette suite, à l'intérieur du répertoire de configuration de GIMP :
@@ -714,6 +742,7 @@ développement, pas au signalement d'un problème.
 | GPU coché, le calque indique « sur processeur » | Le fournisseur CUDA ne s'est pas enregistré | Le greffon expose déjà le dossier `bin` du Toolkit au moteur. Ce qui manque le plus souvent est **cuDNN 9**, qui doit se trouver à côté du CUDA Toolkit, ou une version de Toolkit différente de celle attendue par `onnxruntime-gpu` |
 | Option GPU refusée avant tout téléchargement | Aucun CUDA Toolkit détecté | Installez le CUDA Toolkit et cuDNN depuis le site de NVIDIA, ou décochez l'option et utilisez le processeur |
 | Le modèle « de meilleure qualité » donne un moins bon résultat | Normal — voir [Choisir un modèle](#choisir-un-modèle) | Lancez les deux et gardez le meilleur calque |
+| Menu ou fenêtre encore dans l'ancienne langue après un changement de langue de GIMP | GIMP garde en cache l'enregistrement des greffons | Redémarrez GIMP. Si cela persiste, supprimez le fichier `pluginrc` du dossier de profil de GIMP : il réenregistre tous les greffons au démarrage suivant |
 | « Espace disque insuffisant pour installer le moteur IA » | Le greffon vérifie avant tout téléchargement | Libérez de la place : 2 Go pour le moteur processeur, 5 Go pour celui du GPU. Le message indique le requis, le disponible et le volume concerné |
 | « L'option carte graphique a été demandée mais n'a pas pu être utilisée : cuDNN est introuvable » | Le CUDA Toolkit est installé mais pas cuDNN, et la tentative du greffon via PyPI n'a pas abouti | Votre calque a quand même été produit, sur le processeur. Décochez la case, ou installez cuDNN 9 depuis nvidia.com dans la série correspondant à votre CUDA |
 | GPU coché, le calque indique « sur processeur », sans avertissement | Vaut pour l'avertissement d'*écart* : un environnement correctement installé qui a néanmoins calculé sur le processeur. Celui-là n'est affiché qu'une fois par environnement, puis mémorisé | Le nom du calque reste la trace permanente. L'autre avertissement — la voie GPU n'a pas pu être construite du tout — est affiché à **chaque** exécution, puisque vous redemandez la carte à chaque fois |
@@ -766,6 +795,8 @@ Si vous préférez que le greffon construise son propre environnement propre plu
 ### Pour les contributeurs
 
 **Le fichier `.py` doit rester en ASCII pur, commentaires compris.** Une version ne différant que par des caractères accentués dans des chaînes et des commentaires n'était plus du tout exécutée par GIMP sous Windows : le greffon disparaissait des menus et du navigateur de procédures, sans message et sans entrée de journal. La corrélation est établie par bissection, le mécanisme ne l'est pas. Les libellés français de l'interface sont donc écrits sans accents. La contrainte ne vaut que pour le code — la documentation reste en français correct.
+
+**Tout texte affiché à l'utilisateur passe par `_t(francais, anglais)`.** La langue est détectée une fois au démarrage (`LANGUE`). Journaux, marqueurs JSON et sortie du worker restent non traduits : ils servent au diagnostic, pas à l'affichage.
 
 Avant toute publication :
 

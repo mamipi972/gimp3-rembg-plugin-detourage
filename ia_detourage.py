@@ -34,10 +34,48 @@ from gi.repository import Gio
 
 
 # ============================================================================
+# Langue de l'interface - francais si GIMP est en francais, anglais sinon
+# ============================================================================
+
+def _detecter_langue():
+    """GIMP transmet sa langue d'interface a ses greffons par l'environnement
+    (LANGUAGE quand une langue est choisie dans les preferences, sinon celle du
+    systeme). GLib.get_language_names() lit ces variables dans le bon ordre et,
+    sous Windows, se rabat sur la langue de la session. IA_DETOURAGE_LANG=fr ou
+    en force le choix, pour les tests."""
+    forcee = os.environ.get("IA_DETOURAGE_LANG", "").strip().lower()
+    if forcee[:2] in ("fr", "en"):
+        return forcee[:2]
+    try:
+        noms = list(GLib.get_language_names())
+    except Exception:
+        noms = []
+        for variable in ("LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"):
+            valeur = os.environ.get(variable, "")
+            if valeur:
+                noms = valeur.split(":")
+                break
+    for nom in noms:
+        nom = (nom or "").strip().lower()
+        if not nom or nom in ("c", "posix") or nom.startswith("c."):
+            continue
+        return "fr" if nom.startswith("fr") else "en"
+    return "en"
+
+
+LANGUE = _detecter_langue()
+
+
+def _t(francais, anglais):
+    """Retourne le texte dans la langue de l'interface de GIMP."""
+    return francais if LANGUE == "fr" else anglais
+
+
+# ============================================================================
 # Constantes - toute valeur citee dans la documentation doit venir d'ici
 # ============================================================================
 
-VERSION_GREFFON = "3.11.0"
+VERSION_GREFFON = "3.12.0"
 NOM_PROCEDURE = "python-fu-ia-detourage"
 NOM_DOSSIER_PARTAGE = "ai_suite_shared"
 # Identifiant du greffon dans les ressources partagees de la suite. Il ne
@@ -54,17 +92,18 @@ MODELES = {
     "u2netp": {
         "fichier": "u2netp.onnx",
         "taille_mo": 4.4,
-        "titre": "Rapide",
+        "titre": _t("Rapide", "Fast"),
     },
     "u2net": {
         "fichier": "u2net.onnx",
         "taille_mo": 168.0,
-        "titre": "Meilleure qualite",
+        "titre": _t("Meilleure qualite", "Better quality"),
     },
     "isnet-general-use": {
         "fichier": "isnet-general-use.onnx",
         "taille_mo": 170.0,
-        "titre": "Contours fins, cheveux et feuillage",
+        "titre": _t("Contours fins, cheveux et feuillage",
+                    "Fine edges, hair and foliage"),
     },
 }
 MODELE_DEFAUT = "u2netp"
@@ -182,13 +221,20 @@ MARQUEUR_ERR_MEMOIRE = "[IA_ERR_MEMOIRE]"
 MARQUEUR_ERR_INATTENDU = "[IA_ERR_INATTENDU]"
 
 EXPLICATIONS_MARQUEURS = {
-    MARQUEUR_ERR_PARAMS: "Le fichier de parametres n'a pas pu etre relu par le worker.",
-    MARQUEUR_ERR_IMPORT: "Le module IA n'est pas importable dans cet environnement.",
-    MARQUEUR_ERR_IMAGE: "L'image exportee depuis GIMP n'a pas pu etre relue.",
-    MARQUEUR_ERR_MODELE: "Le modele IA n'a pas pu etre charge ou applique.",
-    MARQUEUR_ERR_ECRITURE: "Le fichier resultat n'a pas pu etre ecrit sur le disque.",
-    MARQUEUR_ERR_MEMOIRE: "Memoire insuffisante pour traiter une image de cette taille.",
-    MARQUEUR_ERR_INATTENDU: "Erreur non prevue dans le worker.",
+    MARQUEUR_ERR_PARAMS: _t("Le fichier de parametres n'a pas pu etre relu par le worker.",
+                            "The worker could not read the parameter file."),
+    MARQUEUR_ERR_IMPORT: _t("Le module IA n'est pas importable dans cet environnement.",
+                            "The AI module cannot be imported in this environment."),
+    MARQUEUR_ERR_IMAGE: _t("L'image exportee depuis GIMP n'a pas pu etre relue.",
+                           "The image exported from GIMP could not be read back."),
+    MARQUEUR_ERR_MODELE: _t("Le modele IA n'a pas pu etre charge ou applique.",
+                            "The AI model could not be loaded or applied."),
+    MARQUEUR_ERR_ECRITURE: _t("Le fichier resultat n'a pas pu etre ecrit sur le disque.",
+                              "The result file could not be written to disk."),
+    MARQUEUR_ERR_MEMOIRE: _t("Memoire insuffisante pour traiter une image de cette taille.",
+                             "Not enough memory to process an image of this size."),
+    MARQUEUR_ERR_INATTENDU: _t("Erreur non prevue dans le worker.",
+                               "Unexpected error in the worker."),
 }
 
 VARIABLES_A_PURGER = (
@@ -751,12 +797,28 @@ def libelle_modele(modele):
     contexte se lit comme un poids sur disque deja acquis. On annonce donc
     l'effet visible, puis le nom, puis ce que le choix va reellement couter."""
     fiche = MODELES[modele]
-    taille = ("%.1f" % fiche["taille_mo"]).replace(".0", "").replace(".", ",")
+    taille = ("%.1f" % fiche["taille_mo"]).replace(".0", "")
+    if LANGUE == "fr":
+        taille = taille.replace(".", ",")
     if fiche["taille_mo"] <= SEUIL_TELECHARGEMENT_AUTO_MO:
-        cout = " (" + taille + " Mo a telecharger)"
+        cout = _t(" (" + taille + " Mo a telecharger)",
+                  " (" + taille + " MB download)")
     else:
-        cout = " (" + taille + " Mo, a deposer manuellement)"
+        cout = _t(" (" + taille + " Mo, a deposer manuellement)",
+                  " (" + taille + " MB, manual download)")
     return fiche["titre"] + " - " + modele + cout
+
+
+def libelle_materiel(materiel):
+    """Le worker rend un identifiant francais fixe, compare tel quel ailleurs.
+    Seul l'affichage dans le nom du calque suit la langue de GIMP."""
+    if materiel == "processeur":
+        return _t("processeur", "CPU")
+    if materiel == "inconnu":
+        return _t("materiel inconnu", "unknown hardware")
+    if LANGUE != "fr" and materiel.startswith("GPU "):
+        return materiel[4:] + " GPU"
+    return materiel
 
 
 def verifier_seuil_telechargement(modele):
@@ -768,7 +830,7 @@ def verifier_seuil_telechargement(modele):
     taille = MODELES[modele]["taille_mo"]
 
     if taille > SEUIL_TELECHARGEMENT_AUTO_MO:
-        raise RuntimeError(
+        raise RuntimeError(_t(
             "Le modele " + modele + " pese " + str(int(taille)) + " Mo, au-dela "
             "du seuil de " + str(SEUIL_TELECHARGEMENT_AUTO_MO) + " Mo en deca "
             "duquel le greffon telecharge seul.\n\n"
@@ -776,11 +838,21 @@ def verifier_seuil_telechargement(modele):
             "deposez-le dans :\n" + dossier_modeles() + "\n\n"
             "Le greffon le rangera ensuite automatiquement a l'endroit ou le "
             "moteur le cherche : inutile de creer des sous-dossiers.\n\n"
-            "Ou choisissez un modele plus leger dans la liste."
-        )
+            "Ou choisissez un modele plus leger dans la liste.",
+            "The " + modele + " model weighs " + str(int(taille)) + " MB, "
+            "above the " + str(SEUIL_TELECHARGEMENT_AUTO_MO) + " MB limit "
+            "under which the plug-in downloads by itself.\n\n"
+            "Download the file " + MODELES[modele]["fichier"] + " and "
+            "place it in:\n" + dossier_modeles() + "\n\n"
+            "The plug-in will then move it where the engine looks for it: "
+            "no need to create sub-folders.\n\n"
+            "Or pick a lighter model from the list."
+        ))
 
-    return ("Telechargement du modele " + modele + " (" + str(int(taille))
-            + " Mo, une seule fois)...")
+    return _t("Telechargement du modele " + modele + " (" + str(int(taille))
+              + " Mo, une seule fois)...",
+              "Downloading the " + modele + " model (" + str(int(taille))
+              + " MB, only once)...")
 
 
 def signature_environnement(variante):
@@ -871,7 +943,8 @@ def marqueur_en_echec(variante):
     marqueur = _marqueur_a_jour(variante)
     if not marqueur or marqueur.get("etat") != "echec":
         return None
-    return marqueur.get("message") or "cause non enregistree"
+    return marqueur.get("message") or _t("cause non enregistree",
+                                         "cause not recorded")
 
 
 def materiel_deja_constate(variante):
@@ -1305,18 +1378,25 @@ def message_echec(journal, entete, code=None, variante=None):
 
     minuscules = journal.lower()
     if "cudnn" in minuscules:
-        morceaux.append(
+        morceaux.append(_t(
             "Le moteur a bien trouve CUDA mais pas cuDNN, qui est une "
             "bibliotheque distincte a installer separement depuis le site de "
             "NVIDIA. Le CUDA Toolkit ne la contient pas.\n\n"
             "Decochez l'option GPU pour travailler des maintenant sur le "
-            "processeur : le resultat sera identique, seulement plus lent."
-        )
+            "processeur : le resultat sera identique, seulement plus lent.",
+            "The engine found CUDA but not cuDNN, which is a separate "
+            "library to install from the NVIDIA website. The CUDA Toolkit "
+            "does not include it.\n\n"
+            "Untick the GPU option to work on the CPU right away: the "
+            "result is identical, only slower."
+        ))
     elif "out of memory" in minuscules or "cuda_error" in minuscules:
-        morceaux.append(
+        morceaux.append(_t(
             "La carte graphique n'a pas assez de memoire pour cette image. "
-            "Essayez un modele plus leger, ou decochez l'option GPU."
-        )
+            "Essayez un modele plus leger, ou decochez l'option GPU.",
+            "The graphics card does not have enough memory for this image. "
+            "Try a lighter model, or untick the GPU option."
+        ))
 
     queue = journal.strip()[-QUEUE_LOG_AFFICHEE:]
     if queue:
@@ -1327,29 +1407,41 @@ def message_echec(journal, entete, code=None, variante=None):
     # worker emet un marqueur sur chacune de ses sorties en echec ; n'avoir
     # rien du tout signifie que le processus est mort avant d'executer la
     # moindre ligne Python, donc au chargement des bibliotheques natives.
-    morceaux.append(
+    morceaux.append(_t(
         "Le processus de traitement n'a produit aucune sortie et s'est "
-        "termine avec le code " + str(code) + "."
-    )
-    morceaux.append(
+        "termine avec le code " + str(code) + ".",
+        "The processing subprocess produced no output and exited with "
+        "code " + str(code) + "."
+    ))
+    morceaux.append(_t(
         "Une sortie vide designe un arret au niveau du systeme, avant toute "
         "execution de code Python : bibliotheque native introuvable ou "
         "incompatible. Sous Windows, le code -1073741515 correspond a une DLL "
-        "manquante, et -1073741795 a une instruction non supportee."
-    )
+        "manquante, et -1073741795 a une instruction non supportee.",
+        "Empty output means a system-level stop, before any Python code "
+        "ran: a native library is missing or incompatible. On Windows, "
+        "code -1073741515 means a missing DLL, and -1073741795 an "
+        "unsupported CPU instruction."
+    ))
     if variante == VARIANTE_GPU:
-        morceaux.append(
+        morceaux.append(_t(
             "L'option GPU est active : la cause la plus probable est une "
             "version de CUDA ou de cuDNN differente de celle attendue par "
             "onnxruntime-gpu. Decochez l'option pour verifier que le reste "
-            "fonctionne."
-        )
-    morceaux.append(
+            "fonctionne.",
+            "The GPU option is on: the most likely cause is a CUDA or cuDNN "
+            "version different from the one onnxruntime-gpu expects. Untick "
+            "the option to check that everything else works."
+        ))
+    morceaux.append(_t(
         "Pour obtenir le detail, definissez la variable d'environnement "
         "IA_DETOURAGE_DEBUG=1 avant de lancer GIMP : le dossier de travail "
         "est alors conserve et son chemin affiche, ce qui permet de relancer "
-        "le worker a la main depuis une invite de commandes."
-    )
+        "le worker a la main depuis une invite de commandes.",
+        "For details, set the environment variable IA_DETOURAGE_DEBUG=1 "
+        "before starting GIMP: the working folder is then kept and its path "
+        "shown, so the worker can be re-run by hand from a command prompt."
+    ))
     return "\n\n".join(morceaux)
 
 
@@ -1381,12 +1473,14 @@ def verifier_espace_disque(chemin, variante):
     if libre is None or libre >= requis:
         return
     go = 1024.0 * 1024.0 * 1024.0
-    raison = (
+    raison = _t(
         "Espace disque insuffisant pour installer le moteur IA.\n\n"
         "Requis : %.1f Go. Disponible : %.1f Go sur le volume de :\n%s\n\n"
-        "Liberez de la place, puis relancez le greffon."
-        % (requis / go, libre / go, chemin)
-    )
+        "Liberez de la place, puis relancez le greffon.",
+        "Not enough disk space to install the AI engine.\n\n"
+        "Required: %.1f GB. Available: %.1f GB on the volume of:\n%s\n\n"
+        "Free up some space, then run the plug-in again."
+    ) % (requis / go, libre / go, chemin)
     raise RuntimeError(RAISON_SEULE + raison)
 
 
@@ -1398,28 +1492,35 @@ def _installer_paquets(interpreteur, env, dossier_execution, variante):
     executer_avec_animation(
         [interpreteur, "-m", "pip", "install", "--upgrade", "pip"],
         env, os.path.join(dossier_execution, "installation_pip_amorce.log"),
-        DELAI_PIP, "Preparation de l'installeur de paquets...",
+        DELAI_PIP, _t("Preparation de l'installeur de paquets...",
+                      "Preparing the package installer..."),
     )
 
     commande = [interpreteur, "-m", "pip", "install", "--only-binary=:all:"]
     commande += list(EXIGENCES_PIP[variante])
 
     if variante == VARIANTE_GPU:
-        texte = "Installation du moteur IA pour GPU NVIDIA (long au premier lancement)..."
+        texte = _t("Installation du moteur IA pour GPU NVIDIA (long au premier lancement)...",
+                   "Installing the AI engine for NVIDIA GPU (long on first run)...")
     else:
-        texte = "Installation du module IA (plusieurs minutes au premier lancement)..."
+        texte = _t("Installation du module IA (plusieurs minutes au premier lancement)...",
+                   "Installing the AI module (several minutes on first run)...")
 
     code, journal = executer_avec_animation(
         commande, env, journal_pip, DELAI_PIP, texte,
     )
 
     if code is None:
-        raise RuntimeError(
+        raise RuntimeError(_t(
             "L'installation du module IA a depasse le delai de "
             + str(DELAI_PIP // 60) + " minutes.\n\n"
             "Verifiez votre connexion Internet ou un proxy d'entreprise qui "
-            "bloquerait pip, puis relancez le greffon."
-        )
+            "bloquerait pip, puis relancez le greffon.",
+            "Installing the AI module took longer than "
+            + str(DELAI_PIP // 60) + " minutes.\n\n"
+            "Check your Internet connection, or a corporate proxy that may "
+            "block pip, then run the plug-in again."
+        ))
 
     if variante == VARIANTE_GPU:
         journal += "\n" + _installer_cudnn(interpreteur, env, dossier_execution)
@@ -1437,7 +1538,8 @@ def _installer_cudnn(interpreteur, env, dossier_execution):
             [interpreteur, "-m", "pip", "install", "--only-binary=:all:",
              exigence],
             env, journal_cudnn, DELAI_PIP,
-            "Installation des bibliotheques cuDNN...",
+            _t("Installation des bibliotheques cuDNN...",
+               "Installing the cuDNN libraries..."),
         )
         if code == 0:
             return "cuDNN installe : " + exigence
@@ -1457,9 +1559,12 @@ def preparer_moteur(dossier_execution, forcer_reinstallation, variante_demandee)
         return interpreteur, VARIANTE_CPU, None
 
     if not cuda_runtime_detecte():
-        raison = ("aucun runtime CUDA n'a ete trouve sur ce poste. Le pilote "
-                  "graphique ne suffit pas : il faut le CUDA Toolkit, "
-                  "telechargeable sur le site de NVIDIA.")
+        raison = _t("aucun runtime CUDA n'a ete trouve sur ce poste. Le pilote "
+                    "graphique ne suffit pas : il faut le CUDA Toolkit, "
+                    "telechargeable sur le site de NVIDIA.",
+                    "no CUDA runtime was found on this computer. The graphics "
+                    "driver is not enough: the CUDA Toolkit is required, "
+                    "available from the NVIDIA website.")
     else:
         try:
             interpreteur = assurer_environnement(
@@ -1477,12 +1582,17 @@ def preparer_moteur(dossier_execution, forcer_reinstallation, variante_demandee)
 
     interpreteur = assurer_environnement(
         dossier_execution, forcer_reinstallation, VARIANTE_CPU)
-    avertissement = (
+    avertissement = _t(
         "L'option carte graphique a ete demandee mais n'a pas pu etre "
         "utilisee : " + raison + "\n\n"
         "Le detourage a ete effectue sur le processeur. Le resultat est "
         "identique, seulement plus lent. Decochez l'option pour ne plus voir "
-        "ce message."
+        "ce message.",
+        "The graphics card option was requested but could not be "
+        "used: " + raison + "\n\n"
+        "The background was removed on the CPU instead. The result is "
+        "identical, only slower. Untick the option to stop seeing this "
+        "message."
     )
     return interpreteur, VARIANTE_CPU, avertissement
 
@@ -1497,18 +1607,23 @@ def assurer_environnement(dossier_execution, forcer_reinstallation, variante):
 
         echec = marqueur_en_echec(variante)
         if echec:
-            raise RuntimeError(
+            raise RuntimeError(_t(
                 "Une precedente installation de l'environnement IA a echoue :\n"
                 + echec + "\n\n"
-                "Cochez Reinstaller l'environnement IA dans la fenetre du "
-                "greffon pour relancer la tentative."
-            )
+                "Cochez Reparer l'installation dans la fenetre du "
+                "greffon pour relancer la tentative.",
+                "A previous installation of the AI environment failed:\n"
+                + echec + "\n\n"
+                "Tick Repair the installation in the plug-in dialog to "
+                "try again."
+            ))
     else:
         invalider_marqueur(variante)
 
     env = env_propre()
 
-    Gimp.progress_set_text("Recherche d'un environnement Python...")
+    Gimp.progress_set_text(_t("Recherche d'un environnement Python...",
+                              "Looking for a Python environment..."))
 
     if not forcer_reinstallation:
         interpreteur, canal = trouver_python_avec_ia(env, variante)
@@ -1525,58 +1640,78 @@ def assurer_environnement(dossier_execution, forcer_reinstallation, variante):
             return interpreteur
 
     if est_flatpak():
-        raise RuntimeError(
+        raise RuntimeError(_t(
             "GIMP fonctionne dans un bac a sable Flatpak : aucun interpreteur "
             "Python du systeme n'est accessible depuis ce bac a sable, et le "
             "greffon ne peut donc pas installer le module IA lui-meme.\n\n"
             "Utilisez une installation de GIMP native (paquet de la "
-            "distribution, AppImage ou installeur officiel) pour ce greffon."
-        )
+            "distribution, AppImage ou installeur officiel) pour ce greffon.",
+            "GIMP is running inside a Flatpak sandbox: no system Python "
+            "interpreter is reachable from it, so the plug-in cannot install "
+            "the AI module by itself.\n\n"
+            "Use a native GIMP installation (distribution package, AppImage "
+            "or official installer) for this plug-in."
+        ))
 
     interpreteur = python_du_venv(variante)
     amorce_retenue = None
     canal_amorce = None
 
     if forcer_reinstallation and os.path.isdir(dossier_venv(variante)):
-        Gimp.progress_set_text("Suppression de l'ancien environnement...")
+        Gimp.progress_set_text(_t("Suppression de l'ancien environnement...",
+                                  "Removing the old environment..."))
         shutil.rmtree(dossier_venv(variante), ignore_errors=True)
 
     try:
         if not os.path.exists(interpreteur):
             amorce, canal_amorce = trouver_python_bootstrap(env)
             if not amorce:
-                raise RuntimeError(
+                version_min = ".".join(str(n) for n in VERSION_PYTHON_MIN)
+                raise RuntimeError(_t(
                     "Aucun interpreteur Python du systeme utilisable n'a ete "
                     "trouve pour creer l'environnement dedie a l'IA.\n\n"
-                    "Le greffon a besoin de Python "
-                    + ".".join(str(n) for n in VERSION_PYTHON_MIN)
+                    "Le greffon a besoin de Python " + version_min
                     + " ou plus recent. Installez-le depuis python.org "
                     "(Windows, macOS) ou par le gestionnaire de paquets de "
                     "votre distribution (paquets python3 et python3-venv), "
                     "puis relancez le greffon.\n\n"
                     "L'alias Python du Microsoft Store n'est pas un "
-                    "interpreteur et n'est pas pris en compte."
-                )
+                    "interpreteur et n'est pas pris en compte.",
+                    "No usable system Python interpreter was found to create "
+                    "the dedicated AI environment.\n\n"
+                    "The plug-in needs Python " + version_min
+                    + " or newer. Install it from python.org (Windows, "
+                    "macOS) or with your distribution's package manager "
+                    "(python3 and python3-venv packages), then run the "
+                    "plug-in again.\n\n"
+                    "The Microsoft Store Python alias is not an interpreter "
+                    "and is ignored."
+                ))
 
             amorce_retenue = amorce
-            Gimp.progress_set_text("Creation de l'environnement dedie...")
+            texte_venv = _t("Creation de l'environnement dedie...",
+                            "Creating the dedicated environment...")
+            Gimp.progress_set_text(texte_venv)
             journal_venv = os.path.join(dossier_execution, "creation_venv.log")
             code, journal = executer_avec_animation(
                 [amorce, "-m", "venv", dossier_venv(variante)],
-                env, journal_venv, DELAI_CREATION_VENV,
-                "Creation de l'environnement dedie...",
+                env, journal_venv, DELAI_CREATION_VENV, texte_venv,
             )
 
             # La creation peut echouer sans exception : on controle le resultat
             # reel sur disque, pas seulement le code retour.
             if code is None or code != 0 or not os.path.exists(interpreteur):
-                raise RuntimeError(
+                queue = journal.strip()[-QUEUE_LOG_AFFICHEE:]
+                raise RuntimeError(_t(
                     "Impossible de creer l'environnement virtuel dans :\n"
-                    + dossier_venv(variante) + "\n\n"
-                    + journal.strip()[-QUEUE_LOG_AFFICHEE:] + "\n\n"
+                    + dossier_venv(variante) + "\n\n" + queue + "\n\n"
                     "Sur Debian et Ubuntu, le paquet python3-venv est souvent "
-                    "absent de l'installation de base."
-                )
+                    "absent de l'installation de base.",
+                    "Could not create the virtual environment in:\n"
+                    + dossier_venv(variante) + "\n\n" + queue + "\n\n"
+                    "On Debian and Ubuntu, the python3-venv package is often "
+                    "missing from the base installation."
+                ))
 
         # La validation doit porter sur la variante demandee : verifier
         # seulement l'import laisse passer un environnement GPU depourvu de
@@ -1596,15 +1731,21 @@ def assurer_environnement(dossier_execution, forcer_reinstallation, variante):
             etat = sonder_detaille(interpreteur, sonde, env)
 
             if etat == "delai":
-                raise RuntimeError(
+                raise RuntimeError(_t(
                     "L'installation s'est terminee, mais la verification "
                     "finale a depasse " + str(DELAI_SONDE_IMPORT // 60)
                     + " minutes.\n\n"
                     "Le premier chargement de la pile IA est long, surtout "
                     "avec un antivirus actif. Relancez le filtre : la "
                     "verification devrait aboutir, les fichiers etant "
-                    "desormais en cache."
-                )
+                    "desormais en cache.",
+                    "The installation finished, but the final check took "
+                    "longer than " + str(DELAI_SONDE_IMPORT // 60)
+                    + " minutes.\n\n"
+                    "The first load of the AI stack is slow, especially with "
+                    "an active antivirus. Run the filter again: the check "
+                    "should succeed now that the files are cached."
+                ))
 
             if etat != "ok" and variante == VARIANTE_GPU:
                 # Distinguer un environnement casse d'un environnement complet
@@ -1613,21 +1754,29 @@ def assurer_environnement(dossier_execution, forcer_reinstallation, variante):
                     # Les paquets sont la, mais l'inference de validation a
                     # echoue : la cause est presque toujours cuDNN absent ou
                     # une serie CUDA differente de celle qu'attend la roue.
-                    cause = "le calcul sur carte graphique n'a pas abouti"
+                    cause = _t("le calcul sur carte graphique n'a pas abouti",
+                               "computing on the graphics card did not work")
                     if "cudnn" in journal.lower():
-                        cause = ("cuDNN est introuvable. C'est une "
-                                 "bibliotheque distincte du CUDA Toolkit, que "
-                                 "le greffon a tente d'installer sans y "
-                                 "parvenir")
+                        cause = _t("cuDNN est introuvable. C'est une "
+                                   "bibliotheque distincte du CUDA Toolkit, que "
+                                   "le greffon a tente d'installer sans y "
+                                   "parvenir",
+                                   "cuDNN cannot be found. It is a library "
+                                   "separate from the CUDA Toolkit, which the "
+                                   "plug-in tried to install without success")
                     elif "cuda" in journal.lower():
-                        cause = ("la version de CUDA installee ne correspond "
-                                 "pas a celle qu'attend le moteur")
+                        cause = _t("la version de CUDA installee ne correspond "
+                                   "pas a celle qu'attend le moteur",
+                                   "the installed CUDA version does not match "
+                                   "the one the engine expects")
                     raise RuntimeError(RAISON_SEULE + cause)
 
             if etat != "ok":
-                raise RuntimeError(
+                raise RuntimeError(_t(
                     "L'installation du module IA s'est terminee sans erreur "
-                    "mais le module reste inutilisable.\n\n"
+                    "mais le module reste inutilisable.\n\n",
+                    "The AI module installation finished without error "
+                    "but the module is still unusable.\n\n")
                     + journal.strip()[-QUEUE_LOG_AFFICHEE:]
                 )
 
@@ -1869,7 +2018,8 @@ class IaDetouragePlugin(Gimp.PlugIn):
         appel_protege("set_image_types", procedure.set_image_types, "*")
 
         appel_protege("set_menu_label", procedure.set_menu_label,
-                      "Detourer le calque (IA)...")
+                      _t("Detourer le calque (IA)...",
+                         "Remove Background (AI)..."))
 
         if not appel_protege("add_menu_path", procedure.add_menu_path,
                              "<Image>/Layer/Transparency/"):
@@ -1878,9 +2028,12 @@ class IaDetouragePlugin(Gimp.PlugIn):
 
         appel_protege(
             "set_documentation", procedure.set_documentation,
-            "Detoure le calque selectionne par un modele IA",
-            "Exporte le calque, le traite par rembg dans un processus separe, "
-            "puis reinjecte le resultat comme nouveau calque.",
+            _t("Detoure le calque selectionne par un modele IA",
+               "Removes the background of the selected layer with an AI model"),
+            _t("Exporte le calque, le traite par rembg dans un processus separe, "
+               "puis reinjecte le resultat comme nouveau calque.",
+               "Exports the layer, processes it with rembg in a separate "
+               "process, then adds the result as a new layer."),
             name,
         )
         appel_protege("set_attribution", procedure.set_attribution,
@@ -1893,13 +2046,16 @@ class IaDetouragePlugin(Gimp.PlugIn):
             for rang, nom_modele in enumerate(MODELES_AUTORISES):
                 choix.add(
                     nom_modele, rang, libelle_modele(nom_modele),
-                    "Telecharge automatiquement au premier usage"
+                    _t("Telecharge automatiquement au premier usage",
+                       "Downloaded automatically on first use")
                     if MODELES[nom_modele]["taille_mo"] <= SEUIL_TELECHARGEMENT_AUTO_MO
-                    else "A deposer manuellement dans le dossier des modeles",
+                    else _t("A deposer manuellement dans le dossier des modeles",
+                            "Must be placed manually in the models folder"),
                 )
             procedure.add_choice_argument(
-                "modele", "Modele de detourage",
-                "Determine la qualite du contour et la duree du traitement",
+                "modele", _t("Modele de detourage", "Model"),
+                _t("Determine la qualite du contour et la duree du traitement",
+                   "Sets the edge quality and the processing time"),
                 choix, MODELE_DEFAUT, GObject.ParamFlags.READWRITE
             )
         except Exception:
@@ -1907,9 +2063,12 @@ class IaDetouragePlugin(Gimp.PlugIn):
 
         try:
             procedure.add_boolean_argument(
-                "alpha-matting", "Affiner les contours (plus lent)",
-                "Retravaille la bordure du detourage. Active les trois reglages "
-                "suivants, sans effet tant que cette case est decochee.",
+                "alpha-matting", _t("Affiner les contours (plus lent)",
+                                    "Refine edges (slower)"),
+                _t("Retravaille la bordure du detourage. Active les trois reglages "
+                   "suivants, sans effet tant que cette case est decochee.",
+                   "Recomputes the cut-out boundary. Enables the three settings "
+                   "below, which have no effect while this box is unticked."),
                 ALPHA_MATTING_DEFAUT, GObject.ParamFlags.READWRITE
             )
         except Exception:
@@ -1917,9 +2076,12 @@ class IaDetouragePlugin(Gimp.PlugIn):
 
         try:
             procedure.add_int_argument(
-                "fg-threshold", "Certitude pour garder un pixel",
-                "Plus la valeur est haute, plus le greffon doit etre sur avant "
-                "de conserver un pixel (0-255)",
+                "fg-threshold", _t("Certitude pour garder un pixel",
+                                   "Certainty to keep a pixel"),
+                _t("Plus la valeur est haute, plus le greffon doit etre sur avant "
+                   "de conserver un pixel (0-255)",
+                   "The higher the value, the surer the plug-in must be before "
+                   "keeping a pixel (0-255)"),
                 0, 255, SEUIL_AVANT_PLAN_DEFAUT, GObject.ParamFlags.READWRITE
             )
         except Exception:
@@ -1927,9 +2089,12 @@ class IaDetouragePlugin(Gimp.PlugIn):
 
         try:
             procedure.add_int_argument(
-                "bg-threshold", "Certitude pour effacer un pixel",
-                "Plus la valeur est basse, plus le greffon doit etre sur avant "
-                "d'effacer un pixel (0-255)",
+                "bg-threshold", _t("Certitude pour effacer un pixel",
+                                   "Certainty to erase a pixel"),
+                _t("Plus la valeur est basse, plus le greffon doit etre sur avant "
+                   "d'effacer un pixel (0-255)",
+                   "The lower the value, the surer the plug-in must be before "
+                   "erasing a pixel (0-255)"),
                 0, 255, SEUIL_ARRIERE_PLAN_DEFAUT, GObject.ParamFlags.READWRITE
             )
         except Exception:
@@ -1937,9 +2102,12 @@ class IaDetouragePlugin(Gimp.PlugIn):
 
         try:
             procedure.add_int_argument(
-                "erode-size", "Largeur de la zone incertaine",
-                "Epaisseur de la bordure sur laquelle le contour est recalcule "
-                "(0-255)",
+                "erode-size", _t("Largeur de la zone incertaine",
+                                 "Width of the uncertain zone"),
+                _t("Epaisseur de la bordure sur laquelle le contour est recalcule "
+                   "(0-255)",
+                   "Thickness of the band where the boundary is recomputed "
+                   "(0-255)"),
                 0, 255, EROSION_DEFAUT, GObject.ParamFlags.READWRITE
             )
         except Exception:
@@ -1947,12 +2115,18 @@ class IaDetouragePlugin(Gimp.PlugIn):
 
         try:
             procedure.add_boolean_argument(
-                "gpu", "Utiliser la carte graphique NVIDIA (installation supplementaire)",
-                "Decochee, le calcul se fait sur le processeur, meme si une "
-                "carte est disponible. Cochee, le greffon installe un moteur "
-                "distinct, nettement plus volumineux, et demande explicitement "
-                "le fournisseur CUDA. Sans runtime CUDA sur le poste, l'option "
-                "est refusee avant tout telechargement.",
+                "gpu", _t("Utiliser la carte graphique NVIDIA (installation supplementaire)",
+                          "Use the NVIDIA graphics card (extra installation)"),
+                _t("Decochee, le calcul se fait sur le processeur, meme si une "
+                   "carte est disponible. Cochee, le greffon installe un moteur "
+                   "distinct, nettement plus volumineux, et demande explicitement "
+                   "le fournisseur CUDA. Sans runtime CUDA sur le poste, l'option "
+                   "est refusee avant tout telechargement.",
+                   "Unticked, processing runs on the CPU, even if a card is "
+                   "available. Ticked, the plug-in installs a separate, much "
+                   "larger engine and explicitly requests the CUDA provider. "
+                   "Without a CUDA runtime on the computer, the option is "
+                   "refused before any download."),
                 GPU_DEFAUT, GObject.ParamFlags.READWRITE
             )
         except Exception:
@@ -1960,9 +2134,12 @@ class IaDetouragePlugin(Gimp.PlugIn):
 
         try:
             procedure.add_boolean_argument(
-                "reinstaller", "Reparer l'installation (si le filtre ne fonctionne plus)",
-                "Reconstruit entierement les composants installes par le "
-                "greffon avant de lancer le traitement",
+                "reinstaller", _t("Reparer l'installation (si le filtre ne fonctionne plus)",
+                                  "Repair the installation (if the filter stopped working)"),
+                _t("Reconstruit entierement les composants installes par le "
+                   "greffon avant de lancer le traitement",
+                   "Fully rebuilds the components installed by the plug-in "
+                   "before processing"),
                 REINSTALLER_DEFAUT, GObject.ParamFlags.READWRITE
             )
         except Exception as erreur:
@@ -1972,7 +2149,8 @@ class IaDetouragePlugin(Gimp.PlugIn):
 
     def run(self, procedure, run_mode, image, drawables, config, run_data):
         if len(drawables) != 1:
-            Gimp.message("Veuillez selectionner un seul calque.")
+            Gimp.message(_t("Veuillez selectionner un seul calque.",
+                            "Please select a single layer."))
             return procedure.new_return_values(
                 Gimp.PDBStatusType.CALLING_ERROR, GLib.Error()
             )
@@ -2012,7 +2190,9 @@ class IaDetouragePlugin(Gimp.PlugIn):
                         Gimp.PDBStatusType.CANCEL, GLib.Error()
                     )
             except Exception as erreur:
-                Gimp.message("Impossible d'afficher la fenetre du greffon :\n" + str(erreur))
+                Gimp.message(_t("Impossible d'afficher la fenetre du greffon :\n",
+                                "Could not display the plug-in dialog:\n")
+                             + str(erreur))
                 return procedure.new_return_values(
                     Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error()
                 )
@@ -2040,7 +2220,7 @@ class IaDetouragePlugin(Gimp.PlugIn):
         groupe_annulation_ouvert = False
 
         try:
-            Gimp.progress_init("Exportation du calque...")
+            Gimp.progress_init(_t("Exportation du calque...", "Exporting the layer..."))
 
             chemin_entree = os.path.join(dossier_execution, "entree.png")
             chemin_sortie = os.path.join(dossier_execution, "sortie.png")
@@ -2049,10 +2229,13 @@ class IaDetouragePlugin(Gimp.PlugIn):
             chemin_journal = os.path.join(dossier_execution, "worker.log")
 
             if not exporter_drawable(image, drawable, chemin_entree):
-                raise RuntimeError(
+                raise RuntimeError(_t(
                     "L'exportation du calque vers un fichier temporaire a echoue.\n\n"
                     "Aucune variante connue de Gimp.file_save n'a produit de "
-                    "fichier exploitable dans :\n" + dossier_execution
+                    "fichier exploitable dans :\n",
+                    "Exporting the layer to a temporary file failed.\n\n"
+                    "No known variant of Gimp.file_save produced a usable "
+                    "file in:\n") + dossier_execution
                 )
 
             interpreteur, variante, avertissement_moteur = preparer_moteur(
@@ -2072,7 +2255,8 @@ class IaDetouragePlugin(Gimp.PlugIn):
             # que le refus soit explicite plutot qu'un telechargement subi.
             normaliser_emplacement_modele(modele)
             annonce = verifier_seuil_telechargement(modele)
-            texte_animation = annonce or "Detourage IA en cours..."
+            texte_animation = annonce or _t("Detourage IA en cours...",
+                                            "Removing background with AI...")
 
             code, journal = executer_avec_animation(
                 [interpreteur, chemin_worker, chemin_params],
@@ -2081,31 +2265,40 @@ class IaDetouragePlugin(Gimp.PlugIn):
             )
 
             if code is None:
-                raise RuntimeError(
+                raise RuntimeError(_t(
                     "Le detourage a depasse le delai de "
                     + str(DELAI_WORKER // 60) + " minutes et a ete interrompu.\n\n"
                     "Reessayez sur une image plus petite, ou avec le modele "
-                    "u2netp et sans Alpha Matting."
-                )
+                    "u2netp et sans affiner les contours.",
+                    "Background removal took longer than "
+                    + str(DELAI_WORKER // 60) + " minutes and was stopped.\n\n"
+                    "Try again on a smaller image, or with the u2netp model "
+                    "and without edge refinement."
+                ))
 
             if MARQUEUR_ERR_IMPORT in journal:
                 invalider_marqueur(variante)
-                raise RuntimeError(
+                raise RuntimeError(_t(
                     "Le module IA n'est plus importable dans l'environnement "
                     "enregistre. La detection a ete reinitialisee.\n\n"
                     "Relancez simplement le greffon : il reconstruira "
-                    "l'environnement automatiquement."
-                )
+                    "l'environnement automatiquement.",
+                    "The AI module can no longer be imported in the recorded "
+                    "environment. Detection has been reset.\n\n"
+                    "Simply run the plug-in again: it will rebuild the "
+                    "environment automatically."
+                ))
 
             # Section 12 : le succes se mesure a la production d'un fichier de
             # sortie non vide, pas au code retour ni a la reussite de l'IA.
             if not (os.path.exists(chemin_sortie) and os.path.getsize(chemin_sortie) > 0):
                 raise RuntimeError(
-                    message_echec(journal, "Le detourage a echoue.",
+                    message_echec(journal, _t("Le detourage a echoue.",
+                                              "Background removal failed."),
                                   code, variante))
 
             moteur = valeur_marqueur(journal, MARQUEUR_MOTEUR) or modele
-            materiel = valeur_marqueur(journal, MARQUEUR_MATERIEL) or "materiel inconnu"
+            materiel = valeur_marqueur(journal, MARQUEUR_MATERIEL) or "inconnu"
 
             # Section 18 : l'ecart entre ce qui a ete demande et ce qui a ete
             # constate est signale une fois, puis memorise. Le nom du calque
@@ -2114,7 +2307,7 @@ class IaDetouragePlugin(Gimp.PlugIn):
             if (avertissement is None and variante == VARIANTE_GPU
                     and materiel == "processeur"
                     and materiel_deja_constate(variante) != materiel):
-                avertissement = (
+                avertissement = _t(
                     "L'option GPU NVIDIA est active, mais le calcul s'est fait "
                     "sur le processeur : le moteur n'a pas pu enregistrer le "
                     "fournisseur CUDA.\n\n"
@@ -2122,23 +2315,35 @@ class IaDetouragePlugin(Gimp.PlugIn):
                     "Verifiez la presence des DLL cuDNN 9 a cote, et que la "
                     "version du Toolkit correspond a celle attendue par "
                     "onnxruntime-gpu. "
-                    "Ce message ne sera plus affiche."
+                    "Ce message ne sera plus affiche.",
+                    "The NVIDIA GPU option is on, but processing ran on the "
+                    "CPU: the engine could not register the CUDA provider.\n\n"
+                    "The CUDA Toolkit bin folder is exposed to the engine. "
+                    "Check that the cuDNN 9 DLLs are next to it, and that the "
+                    "Toolkit version matches the one onnxruntime-gpu expects. "
+                    "This message will not be shown again."
                 )
             enregistrer_materiel_constate(variante, materiel)
 
-            Gimp.progress_set_text("Integration du resultat...")
+            Gimp.progress_set_text(_t("Integration du resultat...",
+                                      "Adding the result..."))
 
             # Section 20 : le nom du calque est la seule trace persistante.
-            nom_calque = drawable.get_name() + " (" + moteur + " sur " + materiel + ")"
+            nom_calque = (drawable.get_name() + " (" + moteur
+                          + _t(" sur ", " on ") + libelle_materiel(materiel) + ")")
             calque = charger_calque_resultat(image, chemin_sortie, nom_calque)
 
             if calque is None:
-                raise RuntimeError(
+                raise RuntimeError(_t(
                     "Le detourage a reussi mais le fichier resultat n'a pas pu "
                     "etre reimporte dans GIMP.\n\n"
                     "Aucune variante de chargement de calque n'est disponible "
-                    "dans cette version de GIMP."
-                )
+                    "dans cette version de GIMP.",
+                    "Background removal succeeded but the result file could "
+                    "not be imported back into GIMP.\n\n"
+                    "No layer loading variant is available in this GIMP "
+                    "version."
+                ))
 
             decalage_x, decalage_y = lire_decalages(drawable)
 
@@ -2178,20 +2383,28 @@ class IaDetouragePlugin(Gimp.PlugIn):
                 Gimp.progress_end()
             except Exception:
                 pass
-            texte = "Greffon de detourage IA :\n\n" + str(erreur).replace(
+            texte = _t("Greffon de detourage IA :\n\n",
+                       "AI background removal plug-in:\n\n") + str(erreur).replace(
                 RAISON_SEULE, "")
             archive = archiver_journaux(dossier_execution)
             if archive:
-                texte += (
+                texte += _t(
                     "\n\nLes fichiers de diagnostic ont ete copies dans :\n"
                     + archive + "\n\n"
                     "Ce dossier est essentiel pour comprendre la panne : il "
                     "contient le journal du traitement et les parametres "
                     "employes. Joignez-le a tout signalement, sans quoi le "
-                    "probleme ne peut pas etre reproduit."
+                    "probleme ne peut pas etre reproduit.",
+                    "\n\nThe diagnostic files were copied to:\n"
+                    + archive + "\n\n"
+                    "This folder is essential to understand the failure: it "
+                    "holds the processing log and the parameters used. "
+                    "Attach it to any bug report, otherwise the problem "
+                    "cannot be reproduced."
                 )
             if conserver_fichiers_travail():
-                texte += "\n\nFichiers de travail conserves dans :\n" + dossier_execution
+                texte += _t("\n\nFichiers de travail conserves dans :\n",
+                            "\n\nWorking files kept in:\n") + dossier_execution
             Gimp.message(texte)
             return procedure.new_return_values(
                 Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error()
