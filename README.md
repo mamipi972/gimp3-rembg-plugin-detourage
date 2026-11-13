@@ -12,9 +12,17 @@ The AI model runs in a **separate subprocess**, never inside GIMP's memory — y
 
 ## 🇬🇧 English
 
-### What's new in 3.11
+### What's new in 3.12
 
-| | v2.x | v3.11 |
+Since 3.11:
+
+- **A waiting window** during the first-run installation, model downloads and every background removal: current step, what pip is downloading, elapsed time, and a Cancel button. The status-bar animation alone went unnoticed.
+- **A Python that cannot receive the AI engine is no longer picked.** 32-bit and free-threaded interpreters are rejected, a version newer than the supported range is only a last resort, and the error names the Python it found and the one to install.
+- **pip failures are reported as such**, with the cause (unsupported Python, no network, full disk) instead of "installation finished without error".
+- **The diagnostic folder now records which Python was used** — path, version, architecture — plus pip's exit code and the last step reached.
+- **Model downloads work behind an antivirus or proxy that inspects HTTPS** (seen with Avast): on a certificate refusal, the download is retried with the Windows certificate store.
+
+| | v2.x | v3.12 |
 |---|---|---|
 | Windows setup | manual `pip install` in a terminal | fully automatic |
 | Python environment | your system Python | dedicated, isolated, shared across the plugin suite |
@@ -29,7 +37,7 @@ The AI model runs in a **separate subprocess**, never inside GIMP's memory — y
 - 🤖 **Zero-configuration** — no file to edit, no command to type, on any platform
 - 🎚️ **Three models** — pick speed or edge quality per image
 - 🖥️ **Optional NVIDIA acceleration** — off by default, refused up-front if your machine can't actually use it
-- 📊 **Animated progress bar** with distinct, readable error messages
+- 📊 **Waiting window during installation and processing**, with a Cancel button, and distinct, readable error messages
 - 🔎 **Honest reporting** — the layer name always states which model ran, and on which hardware
 
 <img width="173" height="220" alt="image" src="https://github.com/user-attachments/assets/4107672a-7665-4273-8b7f-9c701f9004f4" />
@@ -40,7 +48,7 @@ The AI model runs in a **separate subprocess**, never inside GIMP's memory — y
 | Requirement | Version |
 |---|---|
 | GIMP | 3.0 or later (tested on 3.0 and 3.2) |
-| Python | 3.10 or later, installed **separately from GIMP**, and not one bundled inside another application |
+| Python | **3.10 to 3.14, 64-bit**, installed **separately from GIMP**, and not one bundled inside another application |
 | Free disk space | **566 MB** installed for the CPU engine, **1.89 GB** for the GPU one; 2 GB resp. 5 GB free required to install |
 | OS | Windows, macOS, Linux — **except Flatpak builds of GIMP** |
 
@@ -52,7 +60,9 @@ The AI model runs in a **separate subprocess**, never inside GIMP's memory — y
 
 #### Step 1 — Install Python (once)
 
-Download Python 3.10 or later from [python.org/downloads](https://www.python.org/downloads/) and run the installer. Ticking *"Add python.exe to PATH"* is convenient but **not required** — the plugin also reads the Windows registry and the `py` launcher, and prefers those.
+Download **Python 3.14, 64-bit** from [python.org/downloads](https://www.python.org/downloads/) ("Windows installer (64-bit)") and run the installer. Ticking *"Add python.exe to PATH"* is convenient but **not required** — the plugin also reads the Windows registry and the `py` launcher, and prefers those.
+
+> ⚠️ **Do not take the newest Python by default.** The big download button on python.org offers the latest release (3.15 at the time of writing), for which the AI engine (`onnxruntime`) is not published yet. Versions 3.10 to 3.14 work, in 64-bit only. If you already have a newer or a 32-bit Python, keep it and install 3.14 64-bit alongside: the plugin picks the right one.
 
 > ⚠️ **A Python bundled inside another application does not qualify.** Blender, Krita, FreeCAD and similar tools ship their own interpreter. One of them was picked up in real use, and the environment built on it would have broken silently the day that application was updated. The plugin now ranks interpreters by how they were found — registry, `py` launcher and standard install locations first, `PATH` alone only as a fallback — and records the channel it used.
 
@@ -85,7 +95,7 @@ If it's missing, the plugin shows you that exact command rather than a cryptic e
 
 #### Step 3 — First run
 
-The first time you run the filter, the plugin builds its environment: it looks for a usable Python, creates a dedicated virtual environment, installs `rembg` and its dependencies, then downloads the model you selected. Expect **about ten seconds** for the CPU engine, or **about five minutes** if you ticked the GPU box, with the progress bar animating throughout. Every later run starts immediately.
+The first time you run the filter, the plugin builds its environment: it looks for a usable Python, creates a dedicated virtual environment, installs `rembg` and its dependencies, then downloads the model you selected. Expect **about two minutes** for the CPU engine on a fast connection, or **five minutes or more** if you ticked the GPU box. A waiting window shows the current step, what is being downloaded and the elapsed time, with a Cancel button; cancelling is safe, the next run resumes the installation. Every later run starts immediately.
 
 If anything fails, you get a specific message — not a generic error — and nothing is left half-installed that a second run can't fix.
 
@@ -101,7 +111,7 @@ Do not right-click and "Save As" directly on the GitHub code page, or you will d
 - **Via terminal (wget):** You must use the direct raw file URL:
 
   ```bash
-  wget https://raw.githubusercontent.com/YOUR_NAME/YOUR_REPO/main/ia_detourage.py
+  wget https://raw.githubusercontent.com/mamipi972/gimp3-rembg-plugin-detourage/main/ia_detourage.py
   ```
 
 #### 2. Strict Folder Naming and Paths
@@ -171,15 +181,15 @@ from clicking *Valider* to the layer appearing.
 
 | Situation | Time |
 |---|---|
-| First run, CPU engine — environment built and model downloaded | **~10 seconds** ¹ |
+| First run, CPU engine — environment built and model downloaded | **~2 minutes** ¹ |
 | First run, GPU engine — `onnxruntime-gpu` plus cuDNN | **~5 minutes** |
 | Any later run, `u2netp` or `u2net`, on the processor | **~10 seconds** |
 | Any later run, `u2net`, on the graphics card | **~10 seconds** |
 
-¹ Measured on a machine where pip had already cached the wheels. On a genuinely
-cold machine, downloading the 566 MB of `rembg`, `scipy` and `scikit-image` is
-bound by your connection and can take several minutes. The progress bar animates
-throughout; nothing is frozen.
+¹ Measured at 105 seconds on a fast connection (12 November 2026). Downloading
+the roughly 500 MB of `rembg`, `scipy` and `scikit-image` is bound by your
+connection and can take longer. The waiting window shows the current step and
+the elapsed time throughout; nothing is frozen.
 
 Two things worth knowing before you choose.
 
@@ -282,8 +292,9 @@ Deleting `ai_suite_shared` resets everything; the plugin rebuilds it on the next
 #### When something fails, send the log
 
 If a run fails, the plugin copies everything useful — the worker's log, the pip
-logs, the parameters it used — into a timestamped folder before deleting its
-working directory:
+logs, the parameters it used, and an `incident.json` stating which Python was
+found, its version and architecture, pip's exit code and the last step reached —
+into a timestamped folder before deleting its working directory:
 
 ```
 <GIMP config>/ai_suite_shared/logs/2026-09-12_16-30-12/
@@ -304,7 +315,8 @@ development, not for reporting a problem.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | The plugin doesn't appear in the menu at all | Wrong folder, folder name not matching the file name, GIMP not restarted, or the file isn't executable (macOS/Linux) | Re-check step 2. If it still doesn't appear, look for `ia_detourage_diagnostic.log` in `%APPDATA%` (Windows) or your home folder — the plugin writes there as soon as GIMP loads it. **No log file at all means GIMP never ran the file**, which points at the install location, not the plugin |
-| "Aucun interpreteur Python du systeme utilisable" | No Python 3.10+ found outside GIMP | Install Python from python.org, or `sudo apt install python3 python3-venv` |
+| "Aucun interpreteur Python du systeme utilisable" | No usable Python found outside GIMP. The message lists any interpreter it found but had to reject (32-bit, free-threaded, too old) | Install Python 3.14 64-bit from python.org, or `sudo apt install python3 python3-venv`, then tick **"Reparer l'installation"** |
+| "Le moteur IA ne peut pas etre installe avec le Python trouve sur ce poste" | The only Python available is newer than the versions the AI engine is published for (3.15 today), so pip finds no `onnxruntime` for it | Install Python 3.14 64-bit **alongside** the existing one, then tick **"Reparer l'installation"**. Nothing needs to be uninstalled |
 | "Impossible de creer l'environnement virtuel" | `venv` present but creation failed — permissions, full disk, broken install | Read the log excerpt in the message; on Debian/Ubuntu `sudo apt install python3-venv`, then run the filter again |
 | "Aucun interpreteur Python du systeme utilisable" **on Debian/Ubuntu with Python installed** | The plugin rejects an interpreter that cannot create a venv, so a missing `python3-venv` surfaces here rather than at creation time | `sudo apt install python3-venv`, then run the filter again |
 | An install step times out | No connection, or a corporate proxy blocking `pip` | Check the connection, then run the filter again. Each install step has its own 15-minute budget, and the GPU variant runs up to four of them, so a fully blocked network can keep the dialog busy well beyond 15 minutes |
@@ -407,9 +419,17 @@ MIT.
 
 ## 🇫🇷 Français
 
-### Ce qui change en 3.11
+### Ce qui change en 3.12
 
-| | v2.x | v3.11 |
+Depuis la 3.11 :
+
+- **Un écran d'attente** pendant l'installation du premier lancement, le téléchargement des modèles et chaque détourage : étape en cours, paquet que pip télécharge, temps écoulé, bouton Annuler. L'animation de la barre d'état passait inaperçue.
+- **Un Python incapable de recevoir le moteur IA n'est plus retenu.** Les interpréteurs 32 bits et sans GIL sont écartés, une version plus récente que la plage prise en charge n'est tentée qu'en dernier recours, et le message nomme le Python trouvé ainsi que celui à installer.
+- **Les échecs de pip sont signalés comme tels**, avec leur cause (Python non pris en charge, pas de réseau, disque plein), au lieu de « installation terminée sans erreur ».
+- **Le dossier de diagnostic consigne le Python utilisé** — chemin, version, architecture — ainsi que le code retour de pip et la dernière étape atteinte.
+- **Le téléchargement des modèles fonctionne derrière un antivirus ou un proxy qui inspecte le HTTPS** (constaté avec Avast) : sur un refus de certificat, le téléchargement est retenté avec le magasin de certificats de Windows.
+
+| | v2.x | v3.12 |
 |---|---|---|
 | Installation Windows | `pip install` à taper dans un terminal | entièrement automatique |
 | Environnement Python | votre Python système | dédié, isolé, mutualisé entre les greffons de la suite |
@@ -424,7 +444,7 @@ MIT.
 - 🤖 **Zéro configuration** — aucun fichier à modifier, aucune commande à taper, sur toutes les plateformes
 - 🎚️ **Trois modèles** — privilégiez la vitesse ou la finesse du contour selon l'image
 - 🖥️ **Accélération NVIDIA optionnelle** — décochée par défaut, refusée d'emblée si votre machine ne peut pas réellement s'en servir
-- 📊 **Barre de progression animée**, messages d'erreur distincts et lisibles
+- 📊 **Écran d'attente pendant l'installation et le détourage**, avec bouton Annuler, messages d'erreur distincts et lisibles
 - 🔎 **Rapport honnête** — le nom du calque indique toujours quel modèle a tourné, et sur quel matériel
 
 <img width="173" height="220" alt="image" src="https://github.com/user-attachments/assets/4107672a-7665-4273-8b7f-9c701f9004f4" />
@@ -435,7 +455,7 @@ MIT.
 | Élément | Version |
 |---|---|
 | GIMP | 3.0 ou plus (testé sur 3.0 et 3.2) |
-| Python | 3.10 ou plus, installé **séparément de GIMP**, et pas celui embarqué dans une autre application |
+| Python | **3.10 à 3.14, en 64 bits**, installé **séparément de GIMP**, et pas celui embarqué dans une autre application |
 | Espace disque libre | **566 Mo** installés pour le moteur processeur, **1,89 Go** pour celui du GPU ; 2 Go resp. 5 Go libres exigés pour installer |
 | Système | Windows, macOS, Linux — **sauf les versions Flatpak de GIMP** |
 
@@ -447,7 +467,9 @@ MIT.
 
 #### Étape 1 — Installer Python (une seule fois)
 
-Téléchargez Python 3.10 ou plus sur [python.org/downloads](https://www.python.org/downloads/) et lancez l'installateur. Cocher « Add python.exe to PATH » est pratique mais **pas nécessaire** : le greffon lit aussi le registre Windows et le lanceur `py`, et les préfère.
+Téléchargez **Python 3.14 en 64 bits** sur [python.org/downloads](https://www.python.org/downloads/) (fichier « Windows installer (64-bit) ») et lancez l'installateur. Cocher « Add python.exe to PATH » est pratique mais **pas nécessaire** : le greffon lit aussi le registre Windows et le lanceur `py`, et les préfère.
+
+> ⚠️ **Ne prenez pas la toute dernière version de Python par défaut.** Le gros bouton de téléchargement de python.org propose la version la plus récente (3.15 à ce jour), pour laquelle le moteur IA (`onnxruntime`) n'est pas encore publié. Les versions 3.10 à 3.14 conviennent, en 64 bits uniquement. Si vous avez déjà un Python plus récent ou en 32 bits, gardez-le et installez Python 3.14 en 64 bits à côté : le greffon choisit le bon.
 
 > ⚠️ **Un Python embarqué dans une autre application ne convient pas.** Blender, Krita, FreeCAD et consorts livrent leur propre interpréteur. L'un d'eux a été retenu en usage réel, et l'environnement bâti dessus aurait cessé de fonctionner sans explication le jour de la mise à jour de cette application. Le greffon classe désormais les interpréteurs selon la manière dont ils ont été trouvés — registre, lanceur `py` et emplacements d'installation standards d'abord, `PATH` seul en dernier recours — et consigne le canal utilisé.
 
@@ -480,7 +502,7 @@ S'il manque, le greffon vous affiche cette commande exacte plutôt qu'une erreur
 
 #### Étape 3 — Premier lancement
 
-Au premier usage du filtre, le greffon construit son environnement : il cherche un Python utilisable, crée un environnement virtuel dédié, y installe `rembg` et ses dépendances, puis télécharge le modèle choisi. Comptez **une dizaine de secondes** pour le moteur processeur, ou **environ cinq minutes** si vous avez coché l'option GPU, barre de progression animée du début à la fin. Tous les lancements suivants démarrent immédiatement.
+Au premier usage du filtre, le greffon construit son environnement : il cherche un Python utilisable, crée un environnement virtuel dédié, y installe `rembg` et ses dépendances, puis télécharge le modèle choisi. Comptez **environ deux minutes** pour le moteur processeur avec une bonne connexion, ou **cinq minutes et plus** si vous avez coché l'option GPU. Un écran d'attente affiche l'étape en cours, ce qui est téléchargé et le temps écoulé, avec un bouton Annuler ; annuler est sans risque, le lancement suivant reprend l'installation. Tous les lancements suivants démarrent immédiatement.
 
 En cas d'échec, vous obtenez un message précis — pas une erreur générique — et rien ne reste à moitié installé qu'un second lancement ne sache réparer.
 
@@ -496,7 +518,7 @@ Ne faites pas de clic droit "Enregistrer sous" directement sur la page GitHub, v
 - **Via le terminal (wget) :** Utilisez obligatoirement l'URL directe du fichier brut :
 
   ```bash
-  wget https://raw.githubusercontent.com/VOTRE_NOM/VOTRE_DEPOT/main/ia_detourage.py
+  wget https://raw.githubusercontent.com/mamipi972/gimp3-rembg-plugin-detourage/main/ia_detourage.py
   ```
 
 #### 2. La nomenclature stricte du dossier
@@ -565,15 +587,15 @@ mégapixel, du clic sur *Valider* jusqu'à l'apparition du calque.
 
 | Situation | Durée |
 |---|---|
-| Premier lancement, moteur processeur — environnement construit et modèle téléchargé | **~10 secondes** ¹ |
+| Premier lancement, moteur processeur — environnement construit et modèle téléchargé | **~2 minutes** ¹ |
 | Premier lancement, moteur GPU — `onnxruntime-gpu` et cuDNN | **~5 minutes** |
 | Tout lancement suivant, `u2netp` ou `u2net`, sur le processeur | **~10 secondes** |
 | Tout lancement suivant, `u2net`, sur la carte graphique | **~10 secondes** |
 
-¹ Mesuré sur une machine dont le cache pip contenait déjà les roues. Sur un
-poste réellement vierge, le téléchargement des 566 Mo de `rembg`, `scipy` et
-`scikit-image` dépend de votre connexion et peut demander plusieurs minutes. La
-barre de progression reste animée du début à la fin : rien n'est bloqué.
+¹ Mesuré à 105 secondes avec une bonne connexion (12 novembre 2026). Le
+téléchargement des quelque 500 Mo de `rembg`, `scipy` et `scikit-image` dépend
+de votre connexion et peut être plus long. L'écran d'attente affiche l'étape en
+cours et le temps écoulé du début à la fin : rien n'est bloqué.
 
 Deux choses à savoir avant de choisir.
 
@@ -682,8 +704,10 @@ Supprimer `ai_suite_shared` remet tout à zéro ; le greffon reconstruit au lanc
 #### Quand quelque chose échoue, envoyez le journal
 
 Si un traitement échoue, le greffon copie tout ce qui est utile — le journal du
-worker, les journaux pip, les paramètres employés — dans un dossier horodaté,
-avant de supprimer son répertoire de travail :
+worker, les journaux pip, les paramètres employés, et un `incident.json` qui
+indique quel Python a été trouvé, sa version et son architecture, le code retour
+de pip et la dernière étape atteinte — dans un dossier horodaté, avant de
+supprimer son répertoire de travail :
 
 ```
 <config GIMP>/ai_suite_shared/logs/2026-09-12_16-30-12/
@@ -704,7 +728,8 @@ développement, pas au signalement d'un problème.
 | Symptôme | Cause probable | Solution |
 |---|---|---|
 | Le greffon n'apparaît nulle part | Mauvais dossier, nom de dossier différent du nom de fichier, GIMP non redémarré, ou script non exécutable (macOS/Linux) | Revoyez l'étape 2. S'il reste absent, cherchez `ia_detourage_diagnostic.log` dans `%APPDATA%` (Windows) ou votre dossier personnel : le greffon y écrit dès que GIMP le charge. **Aucun fichier journal signifie que GIMP n'a jamais exécuté le fichier**, ce qui désigne l'emplacement d'installation, pas le greffon |
-| « Aucun interpreteur Python du systeme utilisable » | Aucun Python 3.10+ trouvé en dehors de GIMP | Installez Python depuis python.org, ou `sudo apt install python3 python3-venv` |
+| « Aucun interpreteur Python du systeme utilisable » | Aucun Python utilisable trouvé en dehors de GIMP. Le message liste les interpréteurs trouvés mais écartés (32 bits, sans GIL, trop anciens) | Installez Python 3.14 en 64 bits depuis python.org, ou `sudo apt install python3 python3-venv`, puis cochez **« Reparer l'installation »** |
+| « Le moteur IA ne peut pas etre installe avec le Python trouve sur ce poste » | Le seul Python disponible est plus récent que les versions pour lesquelles le moteur IA est publié (3.15 aujourd'hui) : pip ne trouve aucun `onnxruntime` pour lui | Installez Python 3.14 en 64 bits **à côté** de l'existant, puis cochez **« Reparer l'installation »**. Rien n'est à désinstaller |
 | « Impossible de creer l'environnement virtuel » | `venv` présent mais la création a échoué — droits, disque plein, installation abîmée | Lisez l'extrait de journal du message ; sur Debian et Ubuntu, `sudo apt install python3-venv`, puis relancez le filtre |
 | « Aucun interpreteur Python du systeme utilisable » **sur Debian/Ubuntu alors que Python est installé** | Le greffon écarte un interpréteur incapable de créer un venv : un `python3-venv` absent se manifeste donc ici, et non au moment de la création | `sudo apt install python3-venv`, puis relancez le filtre |
 | Une étape d'installation dépasse son délai | Pas de connexion, ou un proxy d'entreprise bloque `pip` | Vérifiez la connexion, puis relancez le filtre. Chaque étape dispose de son propre budget de 15 minutes, et la variante GPU en enchaîne jusqu'à quatre : un réseau totalement bloqué peut donc occuper la fenêtre bien au-delà de 15 minutes |
