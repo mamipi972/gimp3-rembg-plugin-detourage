@@ -21,6 +21,7 @@ import glob
 import time
 import shutil
 import signal
+import platform
 import tempfile
 import subprocess
 
@@ -37,7 +38,7 @@ from gi.repository import Gio
 # Constantes - toute valeur citee dans la documentation doit venir d'ici
 # ============================================================================
 
-VERSION_GREFFON = "3.11.0"
+VERSION_GREFFON = "3.12.0"
 NOM_PROCEDURE = "python-fu-ia-detourage"
 NOM_DOSSIER_PARTAGE = "ai_suite_shared"
 # Identifiant du greffon dans les ressources partagees de la suite. Il ne
@@ -91,24 +92,35 @@ CANAL_VENV = "venv_conventionnel"
 
 VERSION_PYTHON_MIN = (3, 10)
 VERSION_PYTHON_MAX_VALIDEE = (3, 14)
+# onnxruntime n'est publie qu'en 64 bits (plus aucune roue win32 depuis la
+# 1.20.1) et pas pour les Python sans GIL. Un interpreteur 32 bits ou
+# free-threaded ne pourra donc jamais recevoir le moteur : il est ecarte, alors
+# qu'un Python seulement trop recent reste tente en dernier recours, parce que
+# les roues finissent par paraitre. Incident du 12/11/2026 : un Python sans
+# roue compatible avait ete retenu, et pip echouait sur un message illisible.
+BITS_REQUIS = 64
 
 VARIANTE_CPU = "onnx-cpu"
 VARIANTE_GPU = "onnx-gpu"
 GPU_DEFAUT = False
 
+# Le plafond de pillow etait <12. rembg exige pillow>=12.1 depuis sa 2.0.70 :
+# pip redescendait donc en silence a rembg 2.0.69, et ne trouvait plus aucune
+# combinaison installable sous Windows ARM. <13 correspond a la combinaison
+# rembg recent + pillow 12 reellement eprouvee.
 EXIGENCES_PIP = {
     VARIANTE_CPU: (
         "rembg[cpu]>=2.0.56,<3",
         "onnxruntime>=1.16,<2",
         "numpy>=1.24,<3",
-        "pillow>=9,<12",
+        "pillow>=9,<13",
         "pymatting>=1.1,<2",
     ),
     VARIANTE_GPU: (
         "rembg[gpu]>=2.0.56,<3",
         "onnxruntime-gpu>=1.16,<2",
         "numpy>=1.24,<3",
-        "pillow>=9,<12",
+        "pillow>=9,<13",
         "pymatting>=1.1,<2",
     ),
 }
@@ -168,7 +180,42 @@ DELAI_CREATION_VENV = 120
 DELAI_PIP = 900
 DELAI_WORKER = 600
 INTERVALLE_POLLING = 0.2
+# Quand l'ecran d'attente est ouvert, la boucle d'attente tourne plus vite :
+# c'est elle qui traite les evenements de la fenetre, et a 0,2 s le bouton
+# Annuler reagit avec un retard perceptible.
+INTERVALLE_ECRAN = 0.05
+# Frequence de relecture du journal de pip pour la ligne de suivi.
+INTERVALLE_SUIVI = 1.0
+LONGUEUR_SUIVI = 96
 QUEUE_LOG_AFFICHEE = 800
+
+TITRE_PREPARATION = "Preparation du module IA"
+TITRE_INSTALLATION = "Installation du module IA"
+TITRE_MODELE = "Telechargement du modele IA"
+TITRE_DETOURAGE = "Detourage en cours"
+NOTE_INSTALLATION = {
+    VARIANTE_CPU: (
+        "Cette installation n'a lieu qu'une seule fois et dure quelques "
+        "minutes. Les detourages suivants demarreront immediatement."
+    ),
+    VARIANTE_GPU: (
+        "Cette installation n'a lieu qu'une seule fois. Le moteur pour carte "
+        "graphique pese pres de 2 Go : comptez cinq minutes ou plus selon "
+        "votre connexion."
+    ),
+}
+NOTE_MODELE = "Chaque modele n'est telecharge qu'une seule fois."
+
+# Motifs du journal de pip qui designent une panne de reseau. Ils sont testes
+# avant tout autre : hors ligne, pip termine lui aussi sur "No matching
+# distribution found", et accuser Python serait alors une fausse piste.
+MOTIFS_RESEAU_PIP = (
+    "connection broken by", "newconnectionerror", "proxyerror", "sslerror",
+    "certificate_verify_failed", "getaddrinfo failed",
+    "temporary failure in name resolution", "read timed out",
+    "connecttimeouterror", "could not fetch url",
+)
+MOTIFS_DISQUE_PIP = ("no space left on device", "errno 28")
 
 MARQUEUR_OK = "[IA_OK]"
 MARQUEUR_MOTEUR = "[IA_MOTEUR]"
@@ -206,11 +253,13 @@ VARIABLES_A_PURGER = (
 # ============================================================================
 
 CODE_WORKER = r'''
+import os
 import sys
 import json
 import traceback
 
 MARQUEUR_OK = "[IA_OK]"
+MARQUEUR_INFO = "[IA_INFO]"
 MARQUEUR_MOTEUR = "[IA_MOTEUR]"
 MARQUEUR_MATERIEL = "[IA_MATERIEL]"
 MARQUEUR_ERR_PARAMS = "[IA_ERR_PARAMS]"
@@ -245,6 +294,50 @@ def materiel_depuis_fournisseurs(fournisseurs):
     if "ROCM" in tete or "MIGraphX" in tete:
         return "GPU AMD"
     return "processeur"
+
+
+def utiliser_certificats_du_systeme(dossier):
+    """Ajoute les autorites du magasin de certificats de Windows a celles que
+    connait la bibliotheque de telechargement. Retourne True si c'est fait.
+
+    Le telechargement d'un modele passe par requests, qui ne fait confiance
+    qu'a sa propre liste d'autorites (certifi) et ignore celle de Windows. Un
+    antivirus ou un proxy d'entreprise qui inspecte le HTTPS presente un
+    certificat signe par sa propre autorite, installee dans Windows mais
+    inconnue de certifi : le telechargement echoue alors sur
+    CERTIFICATE_VERIFY_FAILED, tandis que pip et le navigateur, qui lisent le
+    magasin de Windows, fonctionnent. Constate le 12/11/2026 avec Avast.
+
+    La verification des certificats n'est jamais desactivee : on se borne a
+    reconnaitre les autorites auxquelles le systeme fait deja confiance pour
+    authentifier un serveur, comme le fait le module ssl de Python par defaut.
+    N'est appelee qu'apres un premier echec, pour ne rien changer ailleurs."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ssl
+        import certifi
+        with open(certifi.where(), "r", encoding="utf-8") as flux:
+            morceaux = [flux.read()]
+        ajoutes = 0
+        for magasin in ("ROOT", "CA"):
+            for certificat, encodage, confiance in ssl.enum_certificates(magasin):
+                if encodage != "x509_asn":
+                    continue
+                # 1.3.6.1.5.5.7.3.1 : usage "authentification de serveur".
+                if confiance is True or "1.3.6.1.5.5.7.3.1" in confiance:
+                    morceaux.append(ssl.DER_cert_to_PEM_cert(certificat))
+                    ajoutes += 1
+        if not ajoutes:
+            return False
+        chemin = os.path.join(dossier, "certificats.pem")
+        with open(chemin, "w", encoding="utf-8", newline="\n") as flux:
+            flux.write("\n".join(morceaux))
+        os.environ["REQUESTS_CA_BUNDLE"] = chemin
+        os.environ["SSL_CERT_FILE"] = chemin
+        return True
+    except Exception:
+        return False
 
 
 def main():
@@ -285,15 +378,31 @@ def main():
         disponibles = []
     retenus = [f for f in demandes if f in disponibles]
 
-    try:
+    def ouvrir_session():
         if retenus:
             try:
-                session = new_session(modele, providers=retenus)
+                return new_session(modele, providers=retenus)
             except TypeError:
                 # Anciennes versions de rembg sans parametre providers.
-                session = new_session(modele)
-        else:
-            session = new_session(modele)
+                return new_session(modele)
+        return new_session(modele)
+
+    try:
+        try:
+            session = ouvrir_session()
+        except MemoryError:
+            raise
+        except Exception as erreur:
+            # C'est ici que le modele est telecharge s'il est absent. Un refus
+            # de certificat est retente une fois avec les autorites de Windows.
+            dossier = os.path.dirname(os.path.abspath(sys.argv[1]))
+            if ("CERTIFICATE_VERIFY_FAILED" not in str(erreur)
+                    or not utiliser_certificats_du_systeme(dossier)):
+                raise
+            emettre(MARQUEUR_INFO, "certificat refuse au telechargement du "
+                    "modele (antivirus ou proxy qui inspecte le HTTPS) : "
+                    "nouvel essai avec les autorites du magasin Windows")
+            session = ouvrir_session()
     except MemoryError:
         echouer(MARQUEUR_ERR_MEMOIRE, "chargement du modele")
     except Exception as erreur:
@@ -514,6 +623,22 @@ NOM_FICHIER_INCIDENT = "incident.json"
 JOURS_ARCHIVES_ORPHELINES = 30
 
 
+# Ce que le greffon sait de l'execution en cours, depose dans incident.json.
+# L'archive du 12/11/2026 contenait le journal de pip mais pas la seule
+# information qui aurait permis de conclure : quel Python avait ete retenu, en
+# quelle version et pour quelle architecture.
+CONTEXTE_INCIDENT = {}
+
+
+def noter_contexte(cle, valeur):
+    """Ne leve jamais : le diagnostic ne doit pas pouvoir casser le
+    traitement qu'il documente."""
+    try:
+        CONTEXTE_INCIDENT[cle] = valeur
+    except Exception:
+        pass
+
+
 def archiver_journaux(dossier_execution):
     """Section 13 amendee : le dossier de travail est bien detruit, mais jamais
     avant d'avoir mis a l'abri ce qui permet de comprendre l'echec. Sans cela,
@@ -523,8 +648,11 @@ def archiver_journaux(dossier_execution):
         fichiers = [n for n in os.listdir(dossier_execution)
                     if n.endswith(".log") or n == "parametres.json"]
     except OSError:
-        return None
-    if not fichiers:
+        fichiers = []
+    # Un echec survenu avant tout journal (aucun Python trouve, par exemple)
+    # ne produisait aucune archive : c'etait pourtant un incident a part
+    # entiere. Le contexte seul suffit desormais a en creer une.
+    if not fichiers and not CONTEXTE_INCIDENT:
         return None
 
     # Deux incidents dans la meme seconde ne doivent pas s'ecraser : le second
@@ -537,12 +665,23 @@ def archiver_journaux(dossier_execution):
     cible = os.path.join(dossier_journaux(), horodatage)
     try:
         os.makedirs(cible, exist_ok=True)
-        _ecrire_marque_incident(cible, horodatage)
+        _ecrire_marque_incident(cible, horodatage, dict(CONTEXTE_INCIDENT))
         for nom in fichiers:
             shutil.copy2(os.path.join(dossier_execution, nom),
                          os.path.join(cible, nom))
     except OSError:
         return None
+
+    # Les marqueurs d'environnement disent quel interpreteur a ete retenu, par
+    # quel canal, et ce qui a ete memorise de l'echec. Leur absence dans
+    # l'archive ne doit pas la faire echouer.
+    for variante in (VARIANTE_CPU, VARIANTE_GPU):
+        try:
+            if os.path.isfile(chemin_marqueur(variante)):
+                shutil.copy2(chemin_marqueur(variante),
+                             os.path.join(cible, "marqueur_" + variante + ".json"))
+        except Exception:
+            pass
 
     _purger_journaux()
     return cible
@@ -557,9 +696,12 @@ def _ecrire_marque_incident(cible, horodatage, contexte=None):
     try:
         with open(os.path.join(cible, NOM_FICHIER_INCIDENT), "w",
                   encoding="utf-8") as flux:
+            # default=str : une valeur de contexte non serialisable ne doit pas
+            # faire perdre le marqueur, donc la possibilite de purger l'archive.
             json.dump({"greffon": NOM_GREFFON, "version": VERSION_GREFFON,
                        "plateforme": sys.platform, "horodatage": horodatage,
-                       "contexte": contexte or {}}, flux, indent=2)
+                       "contexte": contexte or {}}, flux, indent=2,
+                      default=str)
     except Exception:
         pass
 
@@ -678,7 +820,13 @@ def chemin_canonique_modele(modele):
     U2NET_HOME. Verifie par observation - apres suppression des fichiers a
     plat, rembg les a retelecharges au meme endroit, en ignorant une
     arborescence models/<nom>/ pourtant presente. Toute disposition imbriquee
-    trouvee ailleurs sous models/ est donc un residu, et non l'inverse."""
+    trouvee ailleurs sous models/ est donc un residu, et non l'inverse.
+
+    Constat valable jusqu'a rembg 2.0.69. Les versions recentes (lu dans le
+    code de la 2.0.87) telechargent sous models/<nom>/<nom>.onnx mais lisent
+    toujours la disposition a plat. Celle-ci reste donc le seul emplacement
+    que toutes les versions savent relire : on continue d'y ranger les
+    fichiers, sans provoquer de second telechargement."""
     return chemin_modele(modele)
 
 
@@ -1107,20 +1255,45 @@ def lister_candidats(env):
     return fiables + autres + embarques + stubs
 
 
-def sonder_detaille(interpreteur, expression, env, delai=DELAI_SONDE_IMPORT):
+def sonder_detaille(interpreteur, expression, env, delai=DELAI_SONDE_IMPORT,
+                    chemin_journal=None):
     """Retourne "ok", "delai" ou "echec". Section 14 : un depassement de delai
     et un import impossible demandent deux messages differents, et les
-    confondre envoie l'utilisateur sur une fausse piste."""
+    confondre envoie l'utilisateur sur une fausse piste.
+
+    L'attente passe par la meme boucle que les autres processus : un import a
+    froid dure des dizaines de secondes, pendant lesquelles un subprocess.run
+    bloquant figeait l'ecran d'attente. La sortie va dans un fichier ou nulle
+    part, jamais dans un tube que personne ne lirait pendant l'attente.
+
+    Avec chemin_journal, ce que la sonde ecrit est conserve : quand le module
+    ne se charge pas apres une installation reussie, c'est la seule trace de
+    la raison."""
+    sortie = None
     try:
-        resultat = subprocess.run(
+        if chemin_journal:
+            sortie = open(chemin_journal, "w", encoding="utf-8", errors="replace")
+        processus = subprocess.Popen(
             [interpreteur, "-c", expression],
-            capture_output=True, timeout=delai, env=env, **options_processus()
+            stdout=sortie if sortie else subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if sortie else subprocess.DEVNULL,
+            env=env, **options_processus()
         )
-        return "ok" if resultat.returncode == 0 else "echec"
-    except subprocess.TimeoutExpired:
-        return "delai"
+        etat = _attendre_processus(processus, delai)
     except Exception:
         return "echec"
+    finally:
+        if sortie is not None:
+            try:
+                sortie.close()
+            except Exception:
+                pass
+
+    if etat == "annule":
+        raise Annulation()
+    if etat == "delai":
+        return "delai"
+    return "ok" if processus.returncode == 0 else "echec"
 
 
 def _sonder(interpreteur, expression, env, delai=DELAI_SONDE_IMPORT):
@@ -1135,12 +1308,20 @@ def trouver_python_avec_ia(env, variante):
     return None, None
 
 
-def _sonder_version(interpreteur, env):
-    """Version majeure/mineure d'un candidat, et capacite a creer un venv,
-    en une seule execution."""
+def _sonder_fiche(interpreteur, env, exiger_venv=True):
+    """Fiche d'un interpreteur en une seule execution : version, taille des
+    pointeurs, presence du GIL, architecture, et capacite a creer un venv.
+
+    La version seule ne suffit pas : un Python 3.14 en 32 bits passait pour
+    valide alors qu'aucune roue onnxruntime n'existe pour lui. Retourne None
+    si l'interpreteur ne s'execute pas ou ne sait pas creer de venv."""
     expression = (
-        "import sys, venv, ensurepip;"
-        "print(sys.version_info[0], sys.version_info[1])"
+        "import sys, struct, sysconfig, platform;"
+        + ("import venv, ensurepip;" if exiger_venv else "")
+        + "print(sys.version_info[0], sys.version_info[1],"
+        " sys.version_info[2], struct.calcsize('P') * 8,"
+        " 1 if sysconfig.get_config_var('Py_GIL_DISABLED') else 0,"
+        " platform.machine() or '?')"
     )
     try:
         resultat = subprocess.run(
@@ -1151,15 +1332,89 @@ def _sonder_version(interpreteur, env):
         if resultat.returncode != 0:
             return None
         morceaux = resultat.stdout.split()
-        return int(morceaux[0]), int(morceaux[1])
+        return {
+            "version": (int(morceaux[0]), int(morceaux[1])),
+            "version_texte": ".".join(morceaux[0:3]),
+            "bits": int(morceaux[3]),
+            "sans_gil": morceaux[4] == "1",
+            "machine": " ".join(morceaux[5:]) or "?",
+        }
     except Exception:
         return None
+    finally:
+        # Cette sonde est breve mais bloquante : on rend la main a la fenetre
+        # d'attente entre deux candidats.
+        battre()
+
+
+def libelle_fiche(fiche):
+    if not fiche:
+        return "Python de version indeterminee"
+    texte = "Python %s, %d bits" % (fiche["version_texte"], fiche["bits"])
+    if fiche["sans_gil"]:
+        texte += ", sans GIL"
+    return texte
+
+
+def motif_rejet(fiche):
+    """Raison pour laquelle un interpreteur ne pourra jamais recevoir le moteur
+    IA, ou None. Un Python trop recent n'est pas un motif de rejet : il reste
+    tente en dernier recours (voir BITS_REQUIS)."""
+    if fiche["version"] < VERSION_PYTHON_MIN:
+        return ("version trop ancienne, il faut au moins Python "
+                + ".".join(str(n) for n in VERSION_PYTHON_MIN))
+    if fiche["bits"] != BITS_REQUIS:
+        return ("Python %d bits, alors que le moteur IA n'existe qu'en "
+                "%d bits" % (fiche["bits"], BITS_REQUIS))
+    if fiche["sans_gil"]:
+        return ("Python sans GIL (free-threaded), variante pour laquelle le "
+                "moteur IA n'est pas publie")
+    return None
+
+
+def trop_recent(fiche):
+    return bool(fiche) and fiche["version"] > VERSION_PYTHON_MAX_VALIDEE
+
+
+def plage_python():
+    return (".".join(str(n) for n in VERSION_PYTHON_MIN) + " a "
+            + ".".join(str(n) for n in VERSION_PYTHON_MAX_VALIDEE))
+
+
+def conseil_python():
+    """La marche a suivre, identique dans tous les messages qui la donnent."""
+    cible = ".".join(str(n) for n in VERSION_PYTHON_MAX_VALIDEE)
+    if est_windows():
+        source = ("depuis python.org (fichier \"Windows installer (64-bit)\"), "
+                  "sans desinstaller celui qui est deja present")
+    else:
+        source = ("depuis python.org ou par le gestionnaire de paquets de "
+                  "votre systeme (paquets python3 et python3-venv)")
+    return (
+        "Installez Python " + cible + " en 64 bits " + source + ", puis "
+        "relancez le greffon en cochant \"Reparer l'installation\".\n\n"
+        "Versions de Python acceptees : " + plage_python() + ", en 64 bits."
+    )
+
+
+def _resume_candidat(chemin, canal, fiche, verdict):
+    return {
+        "chemin": chemin,
+        "canal": canal,
+        "python": libelle_fiche(fiche) if fiche else None,
+        "machine": fiche["machine"] if fiche else None,
+        "verdict": verdict,
+    }
 
 
 def trouver_python_bootstrap(env):
     """Python systeme capable de creer un venv. rembg n'a pas a y etre present.
     On retient la version la plus recente parmi celles validees, et on ne se
-    rabat sur une version plus neuve que si aucune validee n'est disponible."""
+    rabat sur une version plus neuve que si aucune validee n'est disponible.
+
+    Retourne (interpreteur, canal, fiche, ecartes). `ecartes` liste, en clair,
+    les interpreteurs trouves mais inutilisables : sans elle, le message
+    "aucun Python" contredit ce que l'utilisateur voit sur son poste."""
     candidats = list(lister_candidats(env))
     deja = set(os.path.normcase(c) for c, _ in candidats)
     for repli in ("/usr/bin/python3", "/usr/local/bin/python3", "/opt/homebrew/bin/python3"):
@@ -1171,26 +1426,296 @@ def trouver_python_bootstrap(env):
     # la section 3 : version validee la plus recente, puis version plus neuve.
     paniers = {True: {"validees": [], "recentes": []},
                False: {"validees": [], "recentes": []}}
+    examines = []
+    ecartes = []
 
     for interpreteur, canal in candidats:
         if est_stub_windowsapps(interpreteur):
+            examines.append(_resume_candidat(
+                interpreteur, canal, None, "alias du Microsoft Store"))
             continue
-        version = _sonder_version(interpreteur, env)
-        if version is None or version < VERSION_PYTHON_MIN:
+        fiche = _sonder_fiche(interpreteur, env)
+        if fiche is None:
+            examines.append(_resume_candidat(
+                interpreteur, canal, None,
+                "ne s'execute pas ou ne sait pas creer de venv"))
+            continue
+        motif = motif_rejet(fiche)
+        if motif:
+            examines.append(_resume_candidat(interpreteur, canal, fiche,
+                                             "ecarte : " + motif))
+            ecartes.append(interpreteur + " : " + motif)
             continue
         panier = paniers[canal in CANAUX_FIABLES]
-        cle = "validees" if version <= VERSION_PYTHON_MAX_VALIDEE else "recentes"
-        panier[cle].append((version, interpreteur, canal))
+        cle = "recentes" if trop_recent(fiche) else "validees"
+        panier[cle].append((fiche["version"], interpreteur, canal, fiche))
+        examines.append(_resume_candidat(
+            interpreteur, canal, fiche,
+            "utilisable" if cle == "validees"
+            else "plus recent que les versions validees, dernier recours"))
 
-    for fiable in (True, False):
-        for cle in ("validees", "recentes"):
+    noter_contexte("candidats_python", examines)
+
+    # Une version validee l'emporte sur une version trop recente, quel que
+    # soit le canal : la seconde echoue a coup sur tant que ses roues ne sont
+    # pas publiees. L'ordre precedent faisait passer un Python 3.15 du
+    # registre devant un Python 3.13 trouve par le PATH.
+    for cle in ("validees", "recentes"):
+        for fiable in (True, False):
             groupe = paniers[fiable][cle]
             if groupe:
                 groupe.sort(key=lambda entree: entree[0], reverse=True)
-                _, interpreteur, canal = groupe[0]
-                return interpreteur, canal
+                _, interpreteur, canal, fiche = groupe[0]
+                return interpreteur, canal, fiche, ecartes
 
-    return None, None
+    return None, None, None, ecartes
+
+
+# ============================================================================
+# Ecran d'attente - fenetre affichee pendant les operations longues
+# ============================================================================
+
+class Annulation(Exception):
+    """L'utilisateur a clique sur Annuler dans l'ecran d'attente."""
+
+
+def _echapper_balises(texte):
+    return (str(texte).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;"))
+
+
+def duree_lisible(secondes):
+    secondes = int(max(0, secondes))
+    if secondes < 60:
+        return "%d s" % secondes
+    return "%d min %02d s" % (secondes // 60, secondes % 60)
+
+
+class EcranAttente:
+    """Fenetre affichee pendant l'installation du moteur IA, le
+    telechargement d'un modele et le detourage lui-meme : titre, etape en
+    cours, barre animee, ligne de suivi de pip, temps ecoule, bouton Annuler.
+
+    La barre de progression de GIMP, en bas de la fenetre d'image, passe
+    inapercue pendant une installation de plusieurs minutes : l'utilisateur
+    croit le logiciel bloque et le ferme.
+
+    Tout se passe dans le fil principal. Les boucles d'attente appellent
+    battre(), qui anime la barre et traite les evenements GTK en attente ;
+    sans cela la fenetre se fige et Windows la declare "Ne repond pas". La
+    barre reste en mode va-et-vient : pip n'annonce aucun pourcentage, et en
+    inventer un serait mentir."""
+
+    def __init__(self, titre):
+        gi.require_version('Gtk', '3.0')
+        from gi.repository import Gtk, Gdk
+        self.Gtk = Gtk
+        self.annule = False
+        self.debut = time.time()
+        self.dernier_pouls = 0.0
+
+        try:
+            css = Gtk.CssProvider()
+            css.load_from_data(
+                b"progressbar trough, progressbar progress { min-height: 18px; }"
+                b" progressbar progress { background-image: none;"
+                b"   background-color: #2f8fff; border-color: #2f8fff; }")
+            Gtk.StyleContext.add_provider_for_screen(
+                Gdk.Screen.get_default(), css,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        except Exception:
+            pass
+
+        fenetre = Gtk.Window(title="Detourage IA")
+        fenetre.set_position(Gtk.WindowPosition.CENTER)
+        # Attachee a la fenetre de GIMP, comme ses propres dialogues : au-dessus
+        # de GIMP seulement, pas au premier plan des autres programmes.
+        try:
+            from gi.repository import GimpUi
+            GimpUi.window_set_transient(fenetre)
+        except Exception:
+            pass
+        fenetre.set_resizable(False)
+        fenetre.set_default_size(540, -1)
+        fenetre.connect("delete-event", self._sur_fermeture)
+        self.fenetre = fenetre
+
+        boite = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        boite.set_border_width(24)
+        fenetre.add(boite)
+
+        self.titre = Gtk.Label()
+        boite.pack_start(self.titre, False, False, 0)
+
+        self.etape = Gtk.Label(label="Preparation...")
+        self.etape.set_line_wrap(True)
+        self.etape.set_max_width_chars(60)
+        boite.pack_start(self.etape, False, False, 0)
+
+        self.barre = Gtk.ProgressBar()
+        self.barre.set_pulse_step(0.03)
+        boite.pack_start(self.barre, False, False, 4)
+
+        # Une ligne, tronquee : un texte qui change de longueur chaque seconde
+        # ne doit pas faire changer la fenetre de largeur.
+        self.suivi = Gtk.Label()
+        self.suivi.set_max_width_chars(60)
+        try:
+            from gi.repository import Pango
+            self.suivi.set_ellipsize(Pango.EllipsizeMode.END)
+        except Exception:
+            pass
+        boite.pack_start(self.suivi, False, False, 0)
+
+        self.duree = Gtk.Label()
+        boite.pack_start(self.duree, False, False, 0)
+
+        self.note = Gtk.Label()
+        self.note.set_line_wrap(True)
+        self.note.set_max_width_chars(60)
+        self.note.set_justify(Gtk.Justification.CENTER)
+        boite.pack_start(self.note, False, False, 0)
+
+        boutons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        boutons.set_halign(Gtk.Align.END)
+        self.bouton_annuler = Gtk.Button(label="Annuler")
+        self.bouton_annuler.connect("clicked", lambda *_: self.annuler())
+        boutons.pack_start(self.bouton_annuler, False, False, 0)
+        boite.pack_start(boutons, False, False, 0)
+
+        self.definir_titre(titre)
+        fenetre.show_all()
+        self.pomper()
+
+    def pomper(self):
+        while self.Gtk.events_pending():
+            self.Gtk.main_iteration_do(False)
+
+    def _sur_fermeture(self, *_):
+        # Fermer la fenetre par sa croix vaut annulation : la laisser se
+        # fermer sans arreter l'installation la ferait continuer sans temoin.
+        self.annuler()
+        return True
+
+    def annuler(self):
+        self.annule = True
+        self.etape.set_text("Annulation...")
+        self.bouton_annuler.set_sensitive(False)
+
+    def definir_titre(self, texte):
+        self.titre.set_markup(
+            "<span size='x-large' weight='bold'>%s</span>"
+            % _echapper_balises(texte))
+
+    def definir_etape(self, texte):
+        if not self.annule:
+            self.etape.set_text(texte)
+        self.pomper()
+
+    def definir_note(self, texte):
+        self.note.set_text(texte or "")
+        self.note.set_visible(bool(texte))
+
+    def definir_suivi(self, texte):
+        self.suivi.set_markup(
+            "<small>%s</small>" % _echapper_balises(texte or ""))
+
+    def battre(self):
+        """Anime la barre, met a jour le temps ecoule, traite les evenements.
+        Retourne True si l'utilisateur a demande l'annulation."""
+        maintenant = time.time()
+        if maintenant - self.dernier_pouls >= INTERVALLE_ECRAN:
+            self.dernier_pouls = maintenant
+            self.barre.pulse()
+            self.duree.set_text(
+                "Temps ecoule : " + duree_lisible(maintenant - self.debut))
+        self.pomper()
+        return self.annule
+
+    def fermer(self):
+        self.fenetre.destroy()
+        self.pomper()
+
+
+# L'ecran n'existe qu'en mode interactif. Il s'ouvre au plus tard au
+# lancement du detourage, plus tot si une installation est necessaire.
+_ECRAN = {"autorise": False, "fenetre": None}
+
+
+def autoriser_ecran_attente(autorise):
+    _ECRAN["autorise"] = bool(autorise)
+
+
+def ecran_attente_ouvert():
+    return _ECRAN["fenetre"] is not None
+
+
+def ouvrir_ecran_attente(titre, note=""):
+    """Ouvre l'ecran, ou met a jour le titre de celui qui l'est deja.
+
+    Ne leve jamais : une fenetre d'attente qui ne s'affiche pas ne doit pas
+    empecher le detourage. L'echec est journalise et l'on n'y revient plus."""
+    if not _ECRAN["autorise"]:
+        return
+    try:
+        if _ECRAN["fenetre"] is None:
+            _ECRAN["fenetre"] = EcranAttente(titre)
+        else:
+            _ECRAN["fenetre"].definir_titre(titre)
+        _ECRAN["fenetre"].definir_note(note)
+        _ECRAN["fenetre"].pomper()
+    except Exception as erreur:
+        journaliser("ecran d'attente", erreur)
+        _ECRAN["autorise"] = False
+        fermer_ecran_attente()
+
+
+def fermer_ecran_attente():
+    ecran = _ECRAN["fenetre"]
+    _ECRAN["fenetre"] = None
+    if ecran is not None:
+        try:
+            ecran.fermer()
+        except Exception:
+            pass
+
+
+def annoncer(texte):
+    """Annonce l'etape en cours partout ou elle se lit : barre de GIMP, ecran
+    d'attente, et contexte de l'incident - la derniere etape annoncee dit ou
+    le traitement s'est arrete."""
+    noter_contexte("derniere_etape", texte)
+    try:
+        Gimp.progress_set_text(texte)
+    except Exception:
+        pass
+    ecran = _ECRAN["fenetre"]
+    if ecran is not None:
+        try:
+            ecran.definir_etape(texte)
+        except Exception:
+            pass
+
+
+def montrer_suivi(texte):
+    ecran = _ECRAN["fenetre"]
+    if ecran is not None:
+        try:
+            ecran.definir_suivi(texte)
+        except Exception:
+            pass
+
+
+def battre():
+    """Fait vivre l'ecran d'attente. Retourne True si l'annulation a ete
+    demandee, False sinon ou s'il n'y a pas d'ecran."""
+    ecran = _ECRAN["fenetre"]
+    if ecran is None:
+        return False
+    try:
+        return bool(ecran.battre())
+    except Exception:
+        return False
 
 
 # ============================================================================
@@ -1239,35 +1764,92 @@ def _lire_journal(chemin):
     return brut.decode("utf-8", errors="replace")
 
 
-def executer_avec_animation(commande, env, chemin_journal, delai, texte):
+def _derniere_ligne(chemin):
+    """Derniere ligne non vide d'un journal en cours d'ecriture, raccourcie.
+    C'est ce qui distingue, a l'ecran, une installation qui avance d'une
+    installation bloquee : pip y nomme le paquet qu'il telecharge."""
+    try:
+        with open(chemin, "rb") as flux:
+            flux.seek(0, os.SEEK_END)
+            taille = flux.tell()
+            flux.seek(max(0, taille - 4096))
+            brut = flux.read()
+    except OSError:
+        return ""
+    texte = brut.decode("utf-8", errors="replace")
+    for ligne in reversed(texte.splitlines()):
+        ligne = " ".join(ligne.split())
+        if ligne:
+            if len(ligne) > LONGUEUR_SUIVI:
+                ligne = ligne[:LONGUEUR_SUIVI - 3] + "..."
+            return ligne
+    return ""
+
+
+def _attendre_processus(processus, delai, chemin_suivi=None):
+    """Attend la fin d'un processus sans figer l'interface. Retourne "fini",
+    "delai" ou "annule" ; dans les deux derniers cas le processus et toute sa
+    descendance sont tues avant le retour.
+
+    C'est l'unique boucle d'attente du greffon : elle anime la barre de GIMP,
+    fait vivre l'ecran d'attente et releve une demande d'annulation."""
+    debut = time.time()
+    dernier_pouls = 0.0
+    derniere_lecture = 0.0
+    etat = "fini"
+    try:
+        while processus.poll() is None:
+            maintenant = time.time()
+            if maintenant - debut > delai:
+                etat = "delai"
+                break
+            if maintenant - dernier_pouls >= INTERVALLE_POLLING:
+                dernier_pouls = maintenant
+                try:
+                    Gimp.progress_pulse()
+                except Exception:
+                    pass
+            if chemin_suivi and maintenant - derniere_lecture >= INTERVALLE_SUIVI:
+                derniere_lecture = maintenant
+                montrer_suivi(_derniere_ligne(chemin_suivi))
+            if battre():
+                etat = "annule"
+                break
+            time.sleep(INTERVALLE_ECRAN if ecran_attente_ouvert()
+                       else INTERVALLE_POLLING)
+    finally:
+        if processus.poll() is None:
+            _tuer_arbre(processus)
+            try:
+                processus.wait(timeout=15)
+            except Exception:
+                pass
+        if chemin_suivi:
+            montrer_suivi("")
+    return etat
+
+
+def executer_avec_animation(commande, env, chemin_journal, delai, texte,
+                            suivre_journal=False):
     """Retourne (code_retour, journal). code_retour vaut None en cas de depassement
     du delai. Le descripteur du journal est ferme par le `with` qui englobe la
-    boucle de polling : sans cela le fichier reste verrouille sous Windows."""
-    Gimp.progress_set_text(texte)
+    boucle de polling : sans cela le fichier reste verrouille sous Windows.
+
+    Leve Annulation si l'utilisateur a clique sur Annuler dans l'ecran
+    d'attente ; le processus est alors deja tue."""
+    annoncer(texte)
 
     with open(chemin_journal, "w", encoding="utf-8", errors="replace") as journal:
         processus = subprocess.Popen(
             commande, env=env, stdout=journal, stderr=subprocess.STDOUT,
             **options_processus()
         )
-        debut = time.time()
-        depassement = False
-        try:
-            while processus.poll() is None:
-                Gimp.progress_pulse()
-                time.sleep(INTERVALLE_POLLING)
-                if time.time() - debut > delai:
-                    depassement = True
-                    break
-        finally:
-            if processus.poll() is None:
-                _tuer_arbre(processus)
-                try:
-                    processus.wait(timeout=15)
-                except Exception:
-                    pass
+        etat = _attendre_processus(
+            processus, delai, chemin_journal if suivre_journal else None)
 
-    if depassement:
+    if etat == "annule":
+        raise Annulation()
+    if etat == "delai":
         return None, _lire_journal(chemin_journal)
     return processus.returncode, _lire_journal(chemin_journal)
 
@@ -1390,7 +1972,78 @@ def verifier_espace_disque(chemin, variante):
     raise RuntimeError(RAISON_SEULE + raison)
 
 
-def _installer_paquets(interpreteur, env, dossier_execution, variante):
+def lignes_erreur_pip(journal):
+    """Ce que pip dit de son echec, en peu de lignes.
+
+    On ne montre plus la queue brute du journal : la ligne ou pip enumere les
+    versions ecartees pour cause de Requires-Python depasse a elle seule la
+    place disponible, et le message affiche commencait au milieu d'une liste
+    de numeros de version."""
+    retenues = []
+    for ligne in journal.splitlines():
+        ligne = ligne.strip()
+        if not ligne.startswith("ERROR:"):
+            continue
+        if "Ignored the following versions" in ligne:
+            continue
+        retenues.append(ligne[:300])
+    if retenues:
+        return "\n".join(retenues[-6:])
+    return journal.strip()[-QUEUE_LOG_AFFICHEE:]
+
+
+def message_echec_pip(code, journal, fiche):
+    """Traduit un echec de pip en une cause et une marche a suivre.
+
+    Le code retour n'etait pas lu : un pip en echec etait suivi de la sonde
+    d'import, qui echouait a son tour, et le message annoncait une
+    installation "terminee sans erreur"."""
+    minuscules = journal.lower()
+    detail = lignes_erreur_pip(journal)
+    python = libelle_fiche(fiche)
+    manquant = re.search(
+        r"No matching distribution found for ([A-Za-z0-9_.\-]+)", journal)
+
+    if any(motif in minuscules for motif in MOTIFS_RESEAU_PIP):
+        cause = (
+            "L'installation du module IA a echoue : pip n'a pas pu joindre "
+            "le depot de paquets PyPI.\n\n"
+            "Verifiez la connexion Internet, un proxy d'entreprise ou un "
+            "antivirus qui filtrerait les telechargements, puis relancez le "
+            "greffon en cochant \"Reparer l'installation\"."
+        )
+    elif manquant:
+        cause = (
+            "Le moteur IA ne peut pas etre installe avec le Python trouve "
+            "sur ce poste (" + python + ").\n\n"
+            "Aucune version du paquet " + manquant.group(1) + " n'est "
+            "publiee pour lui."
+        )
+        if trop_recent(fiche):
+            cause += (
+                " Ce Python est plus recent que les versions prises en "
+                "charge par le moteur IA."
+            )
+        cause += "\n\n" + conseil_python()
+    elif any(motif in minuscules for motif in MOTIFS_DISQUE_PIP):
+        cause = (
+            "L'installation du module IA a echoue : le disque s'est rempli "
+            "pendant le telechargement.\n\n"
+            "Liberez de la place, puis relancez le greffon en cochant "
+            "\"Reparer l'installation\"."
+        )
+    else:
+        cause = (
+            "L'installation du module IA a echoue : pip a retourne le code "
+            + str(code) + " (" + python + ")."
+        )
+
+    if detail:
+        cause += "\n\n" + detail
+    return cause
+
+
+def _installer_paquets(interpreteur, env, dossier_execution, variante, fiche):
     verifier_espace_disque(dossier_venv(variante), variante)
 
     journal_pip = os.path.join(dossier_execution, "installation_pip.log")
@@ -1399,19 +2052,21 @@ def _installer_paquets(interpreteur, env, dossier_execution, variante):
         [interpreteur, "-m", "pip", "install", "--upgrade", "pip"],
         env, os.path.join(dossier_execution, "installation_pip_amorce.log"),
         DELAI_PIP, "Preparation de l'installeur de paquets...",
+        suivre_journal=True,
     )
 
     commande = [interpreteur, "-m", "pip", "install", "--only-binary=:all:"]
     commande += list(EXIGENCES_PIP[variante])
 
     if variante == VARIANTE_GPU:
-        texte = "Installation du moteur IA pour GPU NVIDIA (long au premier lancement)..."
+        texte = "Telechargement du moteur IA pour GPU NVIDIA (long au premier lancement)..."
     else:
-        texte = "Installation du module IA (plusieurs minutes au premier lancement)..."
+        texte = "Telechargement des paquets du module IA (plusieurs minutes au premier lancement)..."
 
     code, journal = executer_avec_animation(
-        commande, env, journal_pip, DELAI_PIP, texte,
+        commande, env, journal_pip, DELAI_PIP, texte, suivre_journal=True,
     )
+    noter_contexte("pip_code_retour", code)
 
     if code is None:
         raise RuntimeError(
@@ -1420,6 +2075,9 @@ def _installer_paquets(interpreteur, env, dossier_execution, variante):
             "Verifiez votre connexion Internet ou un proxy d'entreprise qui "
             "bloquerait pip, puis relancez le greffon."
         )
+
+    if code != 0:
+        raise RuntimeError(message_echec_pip(code, journal, fiche))
 
     if variante == VARIANTE_GPU:
         journal += "\n" + _installer_cudnn(interpreteur, env, dossier_execution)
@@ -1438,6 +2096,7 @@ def _installer_cudnn(interpreteur, env, dossier_execution):
              exigence],
             env, journal_cudnn, DELAI_PIP,
             "Installation des bibliotheques cuDNN...",
+            suivre_journal=True,
         )
         if code == 0:
             return "cuDNN installe : " + exigence
@@ -1465,6 +2124,10 @@ def preparer_moteur(dossier_execution, forcer_reinstallation, variante_demandee)
             interpreteur = assurer_environnement(
                 dossier_execution, forcer_reinstallation, VARIANTE_GPU)
             return interpreteur, VARIANTE_GPU, None
+        except Annulation:
+            # Annuler l'installation GPU, c'est annuler le detourage : ne pas
+            # enchainer sur l'installation du moteur processeur.
+            raise
         except Exception as erreur:
             texte = str(erreur).strip()
             if RAISON_SEULE in texte:
@@ -1487,6 +2150,22 @@ def preparer_moteur(dossier_execution, forcer_reinstallation, variante_demandee)
     return interpreteur, VARIANTE_CPU, avertissement
 
 
+def _venv_a_reconstruire(interpreteur, env):
+    """Un environnement dont l'import echoue se repare d'ordinaire en y
+    relancant pip. Sauf s'il repose sur un Python qui ne s'execute plus (sa
+    base a ete desinstallee ou mise a jour), qui ne pourra jamais recevoir le
+    moteur IA, ou qui est trop recent : y reinstaller reconduirait le meme
+    echec, alors qu'un autre Python du poste peut convenir.
+
+    On repart alors de zero, et le choix de l'amorce prefere une version
+    validee. C'est ce qui permet a quelqu'un qui vient d'installer le bon
+    Python de s'en sortir sans avoir a deviner qu'il faut tout reconstruire."""
+    fiche = _sonder_fiche(interpreteur, env, exiger_venv=False)
+    if fiche is None:
+        return True
+    return motif_rejet(fiche) is not None or trop_recent(fiche)
+
+
 def assurer_environnement(dossier_execution, forcer_reinstallation, variante):
     """Retourne le chemin d'un interpreteur ou leve une exception explicite.
     Jamais de retour vide a gerer chez l'appelant."""
@@ -1500,7 +2179,7 @@ def assurer_environnement(dossier_execution, forcer_reinstallation, variante):
             raise RuntimeError(
                 "Une precedente installation de l'environnement IA a echoue :\n"
                 + echec + "\n\n"
-                "Cochez Reinstaller l'environnement IA dans la fenetre du "
+                "Cochez \"Reparer l'installation\" dans la fenetre du "
                 "greffon pour relancer la tentative."
             )
     else:
@@ -1508,7 +2187,12 @@ def assurer_environnement(dossier_execution, forcer_reinstallation, variante):
 
     env = env_propre()
 
-    Gimp.progress_set_text("Recherche d'un environnement Python...")
+    # A partir d'ici le traitement peut durer : recherche d'un interpreteur,
+    # creation de l'environnement, telechargement des paquets. On ouvre donc
+    # l'ecran d'attente des maintenant. Un lancement ordinaire ressort plus
+    # haut, sur le marqueur valide, et n'ouvre l'ecran qu'au detourage.
+    ouvrir_ecran_attente(TITRE_PREPARATION)
+    annoncer("Recherche d'un environnement Python...")
 
     if not forcer_reinstallation:
         interpreteur, canal = trouver_python_avec_ia(env, variante)
@@ -1538,28 +2222,51 @@ def assurer_environnement(dossier_execution, forcer_reinstallation, variante):
     canal_amorce = None
 
     if forcer_reinstallation and os.path.isdir(dossier_venv(variante)):
-        Gimp.progress_set_text("Suppression de l'ancien environnement...")
+        annoncer("Suppression de l'ancien environnement...")
         shutil.rmtree(dossier_venv(variante), ignore_errors=True)
 
     try:
+        # La validation doit porter sur la variante demandee : verifier
+        # seulement l'import laisse passer un environnement GPU depourvu de
+        # fournisseur CUDA, qui calcule ensuite sur le processeur en silence.
+        sonde = sonde_de_variante(variante)
+        pret = False
+
+        if os.path.exists(interpreteur):
+            annoncer("Verification de l'environnement existant...")
+            pret = sonder_detaille(interpreteur, sonde, env) == "ok"
+            if not pret and _venv_a_reconstruire(interpreteur, env):
+                annoncer("Suppression de l'ancien environnement...")
+                shutil.rmtree(dossier_venv(variante), ignore_errors=True)
+
         if not os.path.exists(interpreteur):
-            amorce, canal_amorce = trouver_python_bootstrap(env)
+            # Le titre "Installation" n'apparait que lorsqu'une installation
+            # a reellement lieu : la simple verification d'un environnement
+            # existant ne doit pas annoncer plusieurs minutes d'attente.
+            ouvrir_ecran_attente(TITRE_INSTALLATION, NOTE_INSTALLATION[variante])
+            annoncer("Recherche d'un interpreteur Python...")
+            amorce, canal_amorce, fiche_amorce, ecartes = \
+                trouver_python_bootstrap(env)
             if not amorce:
-                raise RuntimeError(
+                message = (
                     "Aucun interpreteur Python du systeme utilisable n'a ete "
                     "trouve pour creer l'environnement dedie a l'IA.\n\n"
-                    "Le greffon a besoin de Python "
-                    + ".".join(str(n) for n in VERSION_PYTHON_MIN)
-                    + " ou plus recent. Installez-le depuis python.org "
-                    "(Windows, macOS) ou par le gestionnaire de paquets de "
-                    "votre distribution (paquets python3 et python3-venv), "
-                    "puis relancez le greffon.\n\n"
+                )
+                if ecartes:
+                    message += (
+                        "Interpreteurs trouves mais inutilisables :\n- "
+                        + "\n- ".join(ecartes[:5]) + "\n\n"
+                    )
+                message += (
+                    conseil_python() + "\n\n"
                     "L'alias Python du Microsoft Store n'est pas un "
                     "interpreteur et n'est pas pris en compte."
                 )
+                raise RuntimeError(message)
 
             amorce_retenue = amorce
-            Gimp.progress_set_text("Creation de l'environnement dedie...")
+            noter_contexte("amorce", _resume_candidat(
+                amorce, canal_amorce, fiche_amorce, "retenu"))
             journal_venv = os.path.join(dossier_execution, "creation_venv.log")
             code, journal = executer_avec_animation(
                 [amorce, "-m", "venv", dossier_venv(variante)],
@@ -1578,13 +2285,24 @@ def assurer_environnement(dossier_execution, forcer_reinstallation, variante):
                     "absent de l'installation de base."
                 )
 
-        # La validation doit porter sur la variante demandee : verifier
-        # seulement l'import laisse passer un environnement GPU depourvu de
-        # fournisseur CUDA, qui calcule ensuite sur le processeur en silence.
-        sonde = sonde_de_variante(variante)
+        if not pret:
+            ouvrir_ecran_attente(TITRE_INSTALLATION, NOTE_INSTALLATION[variante])
+            # La fiche est celle du Python du venv, pas celle de l'amorce : un
+            # environnement reutilise n'a pas d'amorce connue, et c'est bien
+            # cet interpreteur-ci que pip va servir.
+            fiche = _sonder_fiche(interpreteur, env, exiger_venv=False)
+            noter_contexte("python_venv", _resume_candidat(
+                interpreteur, "venv", fiche, "environnement du greffon"))
+            motif = motif_rejet(fiche) if fiche else None
+            if motif:
+                raise RuntimeError(
+                    "L'environnement dedie a l'IA repose sur un Python "
+                    "inutilisable (" + libelle_fiche(fiche) + ") : " + motif
+                    + ".\n\n" + conseil_python()
+                )
 
-        if sonder_detaille(interpreteur, sonde, env) != "ok":
-            journal = _installer_paquets(interpreteur, env, dossier_execution, variante)
+            journal = _installer_paquets(
+                interpreteur, env, dossier_execution, variante, fiche)
 
             # L'installation vient de creer des dossiers de DLL que le PATH
             # capture plus haut ignore : les paquets nvidia-* posent leurs
@@ -1593,7 +2311,12 @@ def assurer_environnement(dossier_execution, forcer_reinstallation, variante):
             # reussit qu'au suivant, ce qui est indefendable a l'usage.
             env = env_propre()
 
-            etat = sonder_detaille(interpreteur, sonde, env)
+            annoncer("Verification du module IA (premier chargement, "
+                     "jusqu'a une minute)...")
+            journal_sonde = os.path.join(
+                dossier_execution, "verification_import.log")
+            etat = sonder_detaille(interpreteur, sonde, env,
+                                   chemin_journal=journal_sonde)
 
             if etat == "delai":
                 raise RuntimeError(
@@ -1625,12 +2348,22 @@ def assurer_environnement(dossier_execution, forcer_reinstallation, variante):
                     raise RuntimeError(RAISON_SEULE + cause)
 
             if etat != "ok":
+                # pip a reussi (son code retour est desormais controle) : la
+                # cause est dans ce que l'import a ecrit, pas dans le journal
+                # d'installation qu'on affichait ici auparavant.
+                trace = _lire_journal(journal_sonde).strip()
                 raise RuntimeError(
-                    "L'installation du module IA s'est terminee sans erreur "
-                    "mais le module reste inutilisable.\n\n"
-                    + journal.strip()[-QUEUE_LOG_AFFICHEE:]
+                    "Les paquets du module IA ont ete installes, mais le "
+                    "module ne se charge pas (" + libelle_fiche(fiche)
+                    + ").\n\n"
+                    + (trace[-QUEUE_LOG_AFFICHEE:] if trace
+                       else "La verification n'a rien ecrit.")
                 )
 
+    except Annulation:
+        # Une annulation n'est pas un echec : ne rien memoriser. Le prochain
+        # lancement reprendra l'installation la ou elle en etait.
+        raise
     except Exception as erreur:
         ecrire_marqueur(variante, {
             "version": VERSION_GREFFON,
@@ -2039,8 +2772,26 @@ class IaDetouragePlugin(Gimp.PlugIn):
         contexte_empile = False
         groupe_annulation_ouvert = False
 
+        # L'ecran d'attente suppose une interface : en mode non interactif
+        # (script, lot), seule la barre de GIMP est animee.
+        autoriser_ecran_attente(run_mode == Gimp.RunMode.INTERACTIVE)
+
+        CONTEXTE_INCIDENT.clear()
+        noter_contexte("systeme", platform.platform())
+        noter_contexte("machine", platform.machine())
+        noter_contexte("python_de_gimp", sys.version.split()[0])
+        try:
+            noter_contexte("gimp", Gimp.version())
+        except Exception:
+            pass
+        noter_contexte("modele", modele)
+        noter_contexte("variante_demandee", variante)
+        noter_contexte("reparation_demandee", reinstaller)
+        noter_contexte("interactif", run_mode == Gimp.RunMode.INTERACTIVE)
+
         try:
             Gimp.progress_init("Exportation du calque...")
+            noter_contexte("derniere_etape", "Exportation du calque...")
 
             chemin_entree = os.path.join(dossier_execution, "entree.png")
             chemin_sortie = os.path.join(dossier_execution, "sortie.png")
@@ -2057,6 +2808,8 @@ class IaDetouragePlugin(Gimp.PlugIn):
 
             interpreteur, variante, avertissement_moteur = preparer_moteur(
                 dossier_execution, reinstaller, variante)
+            noter_contexte("variante_effective", variante)
+            noter_contexte("interpreteur", interpreteur)
 
             parametres["fournisseurs"] = list(FOURNISSEURS[variante])
             parametres["entree"] = chemin_entree
@@ -2074,10 +2827,23 @@ class IaDetouragePlugin(Gimp.PlugIn):
             annonce = verifier_seuil_telechargement(modele)
             texte_animation = annonce or "Detourage IA en cours..."
 
+            # L'ecran d'attente accompagne tout detourage interactif, pas
+            # seulement l'installation. Il avait d'abord ete reserve aux
+            # operations longues, pour ne pas ouvrir une fenetre pendant
+            # quelques secondes ; a l'usage, son absence au second detourage
+            # se lisait comme une panne, la barre de GIMP passant inapercue.
+            if annonce:
+                ouvrir_ecran_attente(TITRE_MODELE, NOTE_MODELE)
+            else:
+                ouvrir_ecran_attente(TITRE_DETOURAGE)
+
+            # Pendant un telechargement, le worker ecrit l'avancement dans son
+            # journal : la ligne de suivi l'affiche. Hors telechargement le
+            # journal ne contient que des avertissements, sans interet ici.
             code, journal = executer_avec_animation(
                 [interpreteur, chemin_worker, chemin_params],
                 env_propre(), chemin_journal, DELAI_WORKER,
-                texte_animation,
+                texte_animation, suivre_journal=bool(annonce),
             )
 
             if code is None:
@@ -2126,7 +2892,7 @@ class IaDetouragePlugin(Gimp.PlugIn):
                 )
             enregistrer_materiel_constate(variante, materiel)
 
-            Gimp.progress_set_text("Integration du resultat...")
+            annoncer("Integration du resultat...")
 
             # Section 20 : le nom du calque est la seule trace persistante.
             nom_calque = drawable.get_name() + " (" + moteur + " sur " + materiel + ")"
@@ -2165,6 +2931,10 @@ class IaDetouragePlugin(Gimp.PlugIn):
             except Exception:
                 pass
 
+            # Fermer l'ecran avant de rendre la main : le calque apparait dans
+            # GIMP, et un eventuel avertissement ne doit pas s'ouvrir derriere
+            # une fenetre d'attente encore affichee.
+            fermer_ecran_attente()
             Gimp.displays_flush()
             Gimp.progress_end()
 
@@ -2173,13 +2943,28 @@ class IaDetouragePlugin(Gimp.PlugIn):
 
             return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
+        except Annulation:
+            # Annulation demandee depuis l'ecran d'attente : ni message
+            # d'erreur, ni archive d'incident. Le processus en cours a deja
+            # ete tue par la boucle d'attente.
+            fermer_ecran_attente()
+            try:
+                Gimp.progress_end()
+            except Exception:
+                pass
+            return procedure.new_return_values(
+                Gimp.PDBStatusType.CANCEL, GLib.Error()
+            )
+
         except Exception as erreur:
+            fermer_ecran_attente()
             try:
                 Gimp.progress_end()
             except Exception:
                 pass
             texte = "Greffon de detourage IA :\n\n" + str(erreur).replace(
                 RAISON_SEULE, "")
+            noter_contexte("erreur", str(erreur)[:4000])
             archive = archiver_journaux(dossier_execution)
             if archive:
                 texte += (
@@ -2198,6 +2983,7 @@ class IaDetouragePlugin(Gimp.PlugIn):
             )
 
         finally:
+            fermer_ecran_attente()
             if groupe_annulation_ouvert:
                 try:
                     image.undo_group_end()
